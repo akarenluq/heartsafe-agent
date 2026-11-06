@@ -1,0 +1,42 @@
+# HeartSafe Agent - imaging path configuration.
+# The LLM orchestrator reads these values but must never edit them.
+# "auto" thresholds are calibrated from data (see README, step 6).
+
+dataset_id: 201
+dataset_name: Dataset201_HeartSafeMNMs
+trainer: nnUNetTrainer_250epochs
+configuration: 2d
+fold: 0
+
+# Which original M&Ms splits go into nnU-Net training.
+# Training only on the labelled Training split (vendors A and B) keeps
+# vendors C and D unseen, which is the device-shift story of the demo.
+train_splits: [train]
+
+plausibility:
+  lvef_range_pct: [10, 85]        # outside -> implausible
+  lv_edv_ml_range: [40, 400]
+  rv_edv_ml_range: [40, 450]
+  min_lv_component_fraction: 0.95 # largest connected LV piece / all LV voxels
+  min_lv_slices: 3
+
+quality:
+  min_snr: auto                   # auto = quantile of training-set SNR
+  min_snr_quantile: 0.05
+
+uncertainty:
+  threshold: auto                 # auto = quantile on held-out validation exams
+  quantile: 0.90
+
+shift:
+  threshold: auto                 # auto = quantile of training Mahalanobis distances
+  quantile: 0.95
+
+# Safeguards proposed by the equity audit. Only an administrator sets
+# approved: true. When approved, exams in that subgroup are escalated at a
+# lower uncertainty threshold (threshold x uncertainty_scale).
+safeguards: []
+#  - field: vendor_name
+#    value: GE
+#    uncertainty_scale: 0.7
+#    approved: false
