@@ -1,13 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=hs_prepare
-#SBATCH --account=def-CHANGEME
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=02:00:00
 #SBATCH --output=%x_%j.out
 # CPU only: unzip check, conversion and nnU-Net planning/preprocessing.
 set -e
-source $HOME/scratch/heartsafe/HeartSafe_WAI-Hackathon/imaging/slurm/env.sh
+cd "${SLURM_SUBMIT_DIR:?submit from the imaging/ folder}"; source slurm/env.sh
 cd $HS_CODE/scripts
 
 python 00_inspect_dataset.py $HS_ROOT/mnms

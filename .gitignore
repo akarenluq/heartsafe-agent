@@ -9,3 +9,5 @@ nnUNet_results/
 results/
 preds/
 faulty/
+wheelhouse/
+imaging/slurm/site.env

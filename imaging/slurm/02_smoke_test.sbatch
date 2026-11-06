@@ -1,14 +1,13 @@
 #!/bin/bash
 #SBATCH --job-name=hs_smoke
-#SBATCH --account=def-CHANGEME
-#SBATCH --gpus-per-node=h100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=00:45:00
 #SBATCH --output=%x_%j.out
+# NEEDS_GPU
 # 5-epoch run + prediction on 4 cases + postprocessing. Must pass before 03_train.
 set -e
-source $HOME/scratch/heartsafe/HeartSafe_WAI-Hackathon/imaging/slurm/env.sh
+cd "${SLURM_SUBMIT_DIR:?submit from the imaging/ folder}"; source slurm/env.sh
 python -c "import torch; assert torch.cuda.is_available(), 'no GPU'; print('GPU:', torch.cuda.get_device_name(0))"
 
 nnUNetv2_train 201 2d 0 -tr nnUNetTrainer_5epochs

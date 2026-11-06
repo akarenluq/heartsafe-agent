@@ -1,14 +1,13 @@
 #!/bin/bash
 #SBATCH --job-name=hs_predict
-#SBATCH --account=def-CHANGEME
-#SBATCH --gpus-per-node=h100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
 #SBATCH --time=03:00:00
 #SBATCH --output=%x_%j.out
+# NEEDS_GPU
 # Clean + faulty predictions, reliability outputs, equity audit, evaluation.
 set -e
-source $HOME/scratch/heartsafe/HeartSafe_WAI-Hackathon/imaging/slurm/env.sh
+cd "${SLURM_SUBMIT_DIR:?submit from the imaging/ folder}"; source slurm/env.sh
 TR=nnUNetTrainer_250epochs
 OUT=$HS_ROOT/results; mkdir -p $OUT
 cd $HS_CODE/scripts
