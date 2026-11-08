@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=hs_prepare
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
-#SBATCH --time=02:00:00
+#SBATCH --mem=40G
+#SBATCH --time=00:30:00
 #SBATCH --output=%x_%j.out
 # CPU only: unzip, check, conversion and nnU-Net planning/preprocessing.
 set -e

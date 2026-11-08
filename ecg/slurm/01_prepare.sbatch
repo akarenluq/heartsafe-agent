@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=hs_ecg_prepare
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=48G
-#SBATCH --time=02:00:00
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=16G
+#SBATCH --time=00:20:00
 #SBATCH --output=%x_%j.out
 # CPU only. From the ecg/ folder: sbatch --account=<ACCOUNT> --partition=<CPU> slurm/01_prepare.sbatch
 set -e

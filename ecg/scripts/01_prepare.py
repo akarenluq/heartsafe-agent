@@ -14,6 +14,7 @@ Usage:
 """
 import argparse
 import ast
+import re
 from functools import partial
 from multiprocessing import Pool
 from pathlib import Path
@@ -25,6 +26,17 @@ import wfdb
 from common import fix_length, load_config, resample
 
 RHYTHM_ABNORMAL = {"AFIB", "AFLT", "SVTAC", "PSVT", "BIGU", "TRIGU", "PACE", "SVARR"}
+NOISE_COLS = ["static_noise", "burst_noise", "baseline_drift", "electrodes_problems"]
+
+
+def mentions_lead_i(note):
+    """PTB-XL noise notes list leads ('I-AVR', 'alles', ', V1,'): does lead I take part?"""
+    if pd.isna(note):
+        return False
+    s = str(note).upper().replace(" ", "")
+    if "ALLES" in s or "ALL" in s:
+        return True
+    return any(t == "I" or t.startswith("I-") for t in re.split(r"[,;]", s))
 
 
 def read_lead(path, lead, fs_out, n_out):
@@ -54,8 +66,10 @@ def prepare_ptbxl(root, cfg, workers, limit):
         rows.append({"exam_id": f"ptbxl_{ecg_id}", "dataset": "ptbxl", "path": str(base / r.filename_hr),
                      "label": label, "fold": int(r.strat_fold), "patient_id": r.patient_id,
                      "sex": {0: "M", 1: "F"}.get(r.sex, "unknown"), "age": age,
-                     "device": str(r.device).strip(), "site": "unknown" if pd.isna(r.site) else str(int(r.site)),
-                     "superclasses": ";".join(sorted(supers)), "rhythm": ";".join(sorted(rhythm))})
+                     "device": " ".join(str(r.device).split()), "site": "unknown" if pd.isna(r.site) else str(int(r.site)),
+                     "superclasses": ";".join(sorted(supers)), "rhythm": ";".join(sorted(rhythm)),
+                     # Real recording problems annotated by PTB-XL experts, on lead I
+                     "lead1_noise": ";".join(c for c in NOISE_COLS if c in r and mentions_lead_i(r[c]))})
     meta = pd.DataFrame(rows)
     if limit:
         meta = meta.groupby("fold", group_keys=False).head(limit)
@@ -103,6 +117,7 @@ def main():
         if name == "ptbxl":
             print(meta.groupby("fold").label.agg(["count", "mean"]).rename(columns={"mean": "abnormal_share"}))
             print("devices:", meta.device.value_counts().head(8).to_dict())
+            print("lead I annotated noise:", int((meta.lead1_noise.fillna("") != "").sum()))
 
 
 if __name__ == "__main__":

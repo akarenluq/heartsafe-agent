@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=hs_smoke
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
-#SBATCH --time=00:45:00
+#SBATCH --mem=16G
+#SBATCH --time=00:15:00
 #SBATCH --output=%x_%j.out
 # NEEDS_GPU
 # 5-epoch run + prediction on 4 cases + postprocessing. Must pass before 03_train.

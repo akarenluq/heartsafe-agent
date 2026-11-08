@@ -22,16 +22,25 @@ model:
 abnormal_prob: 0.5
 
 quality:
-  min_sqi: 0.6          # same as agent reliability.ecg_min_quality
+  min_sqi: 0.6          # agent index (flatline, clipping); same as agent reliability.ecg_min_quality
   hr_range_bpm: [30, 200]
+  # Each measure gets an "auto" threshold at this tail quantile of CLEAN validation ECGs
+  # (no fault knowledge used), so roughly this share of clean ECGs fails each check.
+  tail_quantile: 0.01
+  checks:               # measure: direction that means poor quality
+    template_corr: low
+    baseline_power: high
+    qrs_power: low
+    hf_power: high
 
 uncertainty:
+  method: entropy       # entropy of the temperature-calibrated ensemble probability (0-1 bits)
   threshold: auto       # auto = quantile of validation uncertainty
   quantile: 0.90
 
 shift:
-  threshold: auto       # auto = quantile of validation embedding distances
-  quantile: 0.95
+  threshold: auto       # auto = quantile of validation distances, for each of the two scores
+  quantile: 0.975       # embedding distance + recording-feature distance; either can flag
 
 faults:
   fraction: 0.5         # share of PTB-XL test ECGs given a known fault

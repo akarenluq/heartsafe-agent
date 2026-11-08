@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=hs_ecg_train
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
-#SBATCH --time=03:00:00
+#SBATCH --mem=16G
+#SBATCH --time=00:45:00
 #SBATCH --gpus-per-node=1
 #SBATCH --output=%x_%j.out
 # From the ecg/ folder: sbatch --account=<ACCOUNT> --partition=<GPU> slurm/02_train_evaluate.sbatch

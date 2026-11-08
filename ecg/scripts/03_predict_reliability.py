@@ -1,17 +1,21 @@
 """Step 3: ensemble predictions + reliability checks -> shared HeartSafe JSON per ECG.
 
-For every ECG: abnormal probability (ensemble mean), uncertainty (ensemble spread,
-scaled to 0-1), signal quality index and heart rate, device-shift score (Mahalanobis
-distance of the embedding from PTB-XL training ECGs), flags and a suggested action:
-  repeat    poor signal quality or implausible heart rate -> ask for a new recording
-  escalate  high model uncertainty or device shift -> clinician review
-  accept    otherwise
+For every ECG:
+  probability   ensemble mean, temperature-calibrated on PTB-XL validation
+  uncertainty   entropy of that probability (0-1 bits); ensemble spread kept as a field
+  quality       agent index (flatline, clipping) + template match, baseline power,
+                QRS-band power, high-frequency power, robust heart rate
+  shift_score   max of two distances from PTB-XL training ECGs, each divided by its threshold
+                (>1 = shifted): model embedding, and recording characteristics
+  flags + suggested_action:
+    repeat    poor signal quality or implausible heart rate -> ask for a new recording
+    escalate  high uncertainty or device shift -> clinician review
+    accept    otherwise
+Every threshold is calibrated once on CLEAN PTB-XL validation ECGs (fold 9), never on
+faults or on the shifted device, and saved in <out>/thresholds.json.
 
-Three sets are written to <out>/{clean,faulty,cinc2017}/:
-  clean     PTB-XL test fold
-  faulty    the same ECGs, with a known fault injected into a share of them
-  cinc2017  PhysioNet/CinC 2017 AliveCor ECGs (a different device: the shift test)
-Thresholds are calibrated once on PTB-XL validation and saved in <out>/thresholds.json.
+Sets written to <out>/{clean,faulty,cinc2017}/: PTB-XL test; the same ECGs with a known
+fault injected into a share of them; PhysioNet/CinC 2017 AliveCor ECGs (device shift).
 
 Usage:
   python 03_predict_reliability.py --data work/ --models work/models --out results/ --config ../config.yaml
@@ -23,10 +27,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+from scipy.optimize import minimize_scalar
 from sklearn.covariance import LedoitWolf
 
-from common import LABEL_NAMES, age_band, inject_fault, load_config, model_input, signal_quality
+from common import (LABEL_NAMES, age_band, inject_fault, load_config, model_input, quality_components,
+                    recording_features)
 from model import ECGNet, run
+
+QUALITY_FLAG = {"template_corr": "noisy_signal", "qrs_power": "noisy_signal", "hf_power": "noisy_signal",
+                "baseline_power": "baseline_wander"}
 
 
 class Ensemble:
@@ -42,9 +51,38 @@ class Ensemble:
     def __call__(self, Xraw):
         Xin = model_input(Xraw, self.cfg["fs"])
         outs = [run(n, Xin, self.dev) for n in self.nets]
-        P = np.stack([o[0] for o in outs])
-        # Device-shift score uses member 0's embedding (one consistent feature space).
-        return P.mean(0), P.std(0) / 0.5, outs[0][1]
+        # Embedding shift uses member 0 (one consistent feature space).
+        return np.stack([o[0] for o in outs]), outs[0][1]
+
+
+def logit(p):
+    p = np.clip(p, 1e-6, 1 - 1e-6)
+    return np.log(p / (1 - p))
+
+
+def entropy_bits(p):
+    p = np.clip(p, 1e-6, 1 - 1e-6)
+    return -(p * np.log2(p) + (1 - p) * np.log2(1 - p))
+
+
+def fit_temperature(p, y):
+    z = logit(p)
+
+    def nll(T):
+        q = np.clip(1 / (1 + np.exp(-z / T)), 1e-6, 1 - 1e-6)
+        return -np.mean(y * np.log(q) + (1 - y) * np.log(1 - q))
+    return float(minimize_scalar(nll, bounds=(0.25, 5), method="bounded").x)
+
+
+class Mahalanobis:
+    def __init__(self, E):
+        self.mu_sd = (E.mean(0), E.std(0) + 1e-6)
+        lw = LedoitWolf().fit((E - self.mu_sd[0]) / self.mu_sd[1])
+        self.mu, self.prec = lw.location_, lw.precision_
+
+    def __call__(self, E):
+        d = (E - self.mu_sd[0]) / self.mu_sd[1] - self.mu
+        return np.sqrt(np.maximum(np.einsum("ij,jk,ik->i", d, self.prec, d), 0))
 
 
 def safeguard_scale(row, safeguards):
@@ -55,60 +93,97 @@ def safeguard_scale(row, safeguards):
     return s
 
 
-def decide(q_flags, unc, shift, unc_thr, shift_thr):
-    flags = list(q_flags)
-    if unc > unc_thr:
-        flags.append("high_uncertainty")
-    if shift > shift_thr:
-        flags.append("device_shift")
-    if q_flags:
-        return flags, "repeat"
-    return flags, ("escalate" if flags else "accept")
+class Reliability:
+    def __init__(self, ens, cfg, maha_emb, maha_rec, thr):
+        self.ens, self.cfg, self.maha_emb, self.maha_rec, self.thr = ens, cfg, maha_emb, maha_rec, thr
+
+    def measure(self, X):
+        P, emb = self.ens(X)
+        p_raw = P.mean(0)
+        p = 1 / (1 + np.exp(-logit(p_raw) / self.thr.get("temperature", 1.0)))
+        unc = entropy_bits(p) if self.cfg["uncertainty"]["method"] == "entropy" else P.std(0) / 0.5
+        fs = self.cfg["fs"]
+        comps = [quality_components(x, fs) for x in X]
+        rec = np.stack([recording_features(x, fs) for x in X])
+        return {"p": p, "p_raw": p_raw, "unc": unc, "spread": P.std(0) / 0.5,
+                "d_emb": self.maha_emb(emb), "d_rec": self.maha_rec(rec), "comps": comps}
+
+    def quality_flags(self, c):
+        q, flags = self.cfg["quality"], []
+        if c["agent_sqi"] < q["min_sqi"]:
+            flags.append("low_quality")
+        for k, direction in q["checks"].items():
+            t = self.thr["quality"][k]
+            if (c[k] < t) if direction == "low" else (c[k] > t):
+                flags.append(QUALITY_FLAG.get(k, "low_quality"))
+        lo, hi = q["hr_range_bpm"]
+        if not lo <= c["heart_rate_bpm"] <= hi:
+            flags.append("implausible_heart_rate")
+        return list(dict.fromkeys(flags))
+
+    def decide(self, q_flags, unc, shift, scale):
+        flags = list(q_flags)
+        if unc > self.thr["uncertainty"] * scale:
+            flags.append("high_uncertainty")
+        if shift > 1:
+            flags.append("device_shift")
+        if q_flags:
+            return flags, "repeat"
+        return flags, ("escalate" if flags else "accept")
 
 
-def assess(name, X, meta, faults, ens, maha, thr, cfg, out):
-    prob, unc, emb = ens(X)
-    shift = maha(emb)
-    hr_range = cfg["quality"]["hr_range_bpm"]
+def assess(name, X, meta, faults, rel, out):
+    cfg, thr = rel.cfg, rel.thr
+    m_ = rel.measure(X)
+    shift = np.maximum(m_["d_emb"] / thr["shift_embedding"], m_["d_rec"] / thr["shift_recording"])
     (out / name / "exams").mkdir(parents=True, exist_ok=True)
     rows = []
     for i, m in enumerate(meta.to_dict("records")):
-        q = signal_quality(X[i], cfg["fs"], hr_range)
-        q_flags = []
-        if q["sqi"] < cfg["quality"]["min_sqi"]:
-            q_flags.append("low_quality")
-        if q["heart_rate_bpm"] is None or not hr_range[0] <= q["heart_rate_bpm"] <= hr_range[1]:
-            q_flags.append("implausible_heart_rate")
+        c = m_["comps"][i]
+        q_flags = rel.quality_flags(c)
         m["age_band"] = age_band(m.get("age"))
         scale = safeguard_scale(m, cfg.get("safeguards"))
-        flags, action = decide(q_flags, unc[i], shift[i], thr["uncertainty"] * scale, thr["shift"])
-        _, action_base = decide(q_flags, unc[i], shift[i], thr["uncertainty"], thr["shift"])
+        flags, action = rel.decide(q_flags, m_["unc"][i], shift[i], scale)
+        _, action_base = rel.decide(q_flags, m_["unc"][i], shift[i], 1.0)
         if scale < 1 and action != action_base:
             flags.append("safeguard")
         label = int(m["label"]) if pd.notna(m["label"]) else -1
-        p = float(prob[i])
+        p = float(m_["p"][i])
+        sqi = c["agent_sqi"] if not q_flags else min(c["agent_sqi"], 0.5)  # agent reads quality.sqi < 0.6 as poor
+        noise = m.get("lead1_noise")
+        noise = "" if noise is None or (isinstance(noise, float) and np.isnan(noise)) else str(noise)
         rec = {
             "exam_id": m["exam_id"], "modality": "ecg_single_lead",
             "prediction": {"label": "abnormal" if p >= cfg["abnormal_prob"] else "normal", "abnormal_prob": round(p, 4)},
             "probability": round(p, 4),
-            "uncertainty": round(float(unc[i]), 4),
-            "quality": q,
+            "uncertainty": round(float(m_["unc"][i]), 4),
+            "quality": {"sqi": round(sqi, 3), **{k: c[k] for k in ("agent_sqi", "template_corr", "baseline_power",
+                                                                    "qrs_power", "hf_power", "heart_rate_bpm")},
+                        "issues": c["agent_issues"] + q_flags},
             "shift_score": round(float(shift[i]), 3),
             "metadata": {"dataset": m["dataset"], "device": m.get("device"), "site": m.get("site"),
                          "sex": m.get("sex"), "age": None if pd.isna(m.get("age")) else float(m["age"]),
-                         "age_band": m["age_band"], "lead": cfg["lead"], "fs": cfg["fs"],
-                         "seconds": cfg["seconds"], "model": f"{len(ens.nets)}x 1D-ResNet ensemble"},
-            "thresholds": {"uncertainty": round(thr["uncertainty"] * scale, 4), "shift": round(thr["shift"], 3),
+                         "age_band": m["age_band"], "lead": cfg["lead"], "fs": cfg["fs"], "seconds": cfg["seconds"],
+                         "model": f"{len(rel.ens.nets)}x 1D-ResNet ensemble",
+                         "ensemble_spread": round(float(m_["spread"][i]), 4),
+                         "shift_embedding": round(float(m_["d_emb"][i]), 2),
+                         "shift_recording": round(float(m_["d_rec"][i]), 2)},
+            "thresholds": {"uncertainty": round(thr["uncertainty"] * scale, 4), "shift_score": 1.0,
                            "min_sqi": cfg["quality"]["min_sqi"]},
             "flags": flags, "suggested_action": action,
             # For evaluation only; the agent must not use this to decide.
-            "_eval": {"label": LABEL_NAMES[label], "fault": faults[i], "cinc_class": m.get("cinc_class")},
+            "_eval": {"label": LABEL_NAMES[label], "fault": faults[i], "cinc_class": m.get("cinc_class"),
+                      "annotated_noise": noise},
         }
         json.dump(rec, open(out / name / "exams" / f"{m['exam_id']}.json", "w"))
         rows.append({**{k: m.get(k) for k in ("exam_id", "dataset", "fold", "device", "site", "sex", "age",
                                                "age_band", "cinc_class")},
-                     "label": label, "fault": faults[i], "prob": p, "pred": int(p >= cfg["abnormal_prob"]),
-                     "uncertainty": float(unc[i]), "sqi": q["sqi"], "heart_rate_bpm": q["heart_rate_bpm"],
+                     "lead1_noise": noise, "label": label, "fault": faults[i], "prob": p,
+                     "prob_raw": float(m_["p_raw"][i]), "pred": int(p >= cfg["abnormal_prob"]),
+                     "uncertainty": float(m_["unc"][i]), "ensemble_spread": float(m_["spread"][i]),
+                     "sqi": sqi, **{k: c[k] for k in ("agent_sqi", "template_corr", "baseline_power", "qrs_power",
+                                                      "hf_power", "heart_rate_bpm")},
+                     "shift_embedding": float(m_["d_emb"][i]), "shift_recording": float(m_["d_rec"][i]),
                      "shift_score": float(shift[i]), "flags": ";".join(flags),
                      "suggested_action": action, "action_without_safeguards": action_base})
     df = pd.DataFrame(rows)
@@ -116,6 +191,31 @@ def assess(name, X, meta, faults, ens, maha, thr, cfg, out):
     print(f"\n{name}: {len(df)} ECGs -> {out / name}")
     print(df.suggested_action.value_counts().to_string())
     return df
+
+
+def calibrate(ens, cfg, X_tr, X_va, y_va):
+    """Every threshold from clean ECGs only: training (shift reference) and validation."""
+    fs = cfg["fs"]
+    _, emb_tr = ens(X_tr)
+    maha_emb = Mahalanobis(emb_tr)
+    maha_rec = Mahalanobis(np.stack([recording_features(x, fs) for x in X_tr]))
+    P_va, emb_va = ens(X_va)
+    T = fit_temperature(P_va.mean(0), y_va)
+    p_va = 1 / (1 + np.exp(-logit(P_va.mean(0)) / T))
+    unc_va = entropy_bits(p_va) if cfg["uncertainty"]["method"] == "entropy" else P_va.std(0) / 0.5
+    comps = pd.DataFrame([quality_components(x, fs) for x in X_va])
+    tq = cfg["quality"]["tail_quantile"]
+    u, s = cfg["uncertainty"], cfg["shift"]
+    thr = {
+        "temperature": T,
+        "uncertainty": float(np.quantile(unc_va, u["quantile"])) if u["threshold"] == "auto" else float(u["threshold"]),
+        "shift_embedding": float(np.quantile(maha_emb(emb_va), s["quantile"])),
+        "shift_recording": float(np.quantile(maha_rec(np.stack([recording_features(x, fs) for x in X_va])), s["quantile"])),
+        "quality": {k: float(np.quantile(comps[k], tq if d == "low" else 1 - tq))
+                    for k, d in cfg["quality"]["checks"].items()},
+        "calibrated_on": "clean PTB-XL validation fold (shift reference: training folds)", "n_val": int(len(y_va)),
+    }
+    return maha_emb, maha_rec, thr
 
 
 def main():
@@ -139,30 +239,19 @@ def main():
     va = meta.fold.isin(cfg["folds"]["val"]).values
     te = meta.fold.isin(cfg["folds"]["test"]).values
 
-    # Device-shift reference: PTB-XL training embeddings.
-    _, _, emb_tr = ens(X[tr])
-    lw = LedoitWolf().fit(emb_tr)
-    mu, prec = lw.location_, lw.precision_
-
-    def maha(E):
-        d = E - mu
-        return np.sqrt(np.maximum(np.einsum("ij,jk,ik->i", d, prec, d), 0))
-
+    maha_emb, maha_rec, thr = calibrate(ens, cfg, X[tr], X[va], meta.label.values[va])
     thr_path = out / "thresholds.json"
-    if thr_path.exists():
-        thr = json.load(open(thr_path))
-        print("using saved thresholds", thr)
-    else:
-        _, unc_va, emb_va = ens(X[va])
-        u, s = cfg["uncertainty"], cfg["shift"]
-        thr = {"uncertainty": float(np.quantile(unc_va, u["quantile"])) if u["threshold"] == "auto" else float(u["threshold"]),
-               "shift": float(np.quantile(maha(emb_va), s["quantile"])) if s["threshold"] == "auto" else float(s["threshold"]),
-               "calibrated_on": "PTB-XL validation fold", "n_val": int(va.sum())}
-        json.dump(thr, open(thr_path, "w"), indent=2)
-        print("calibrated thresholds", thr)
+    if thr_path.exists():  # reuse saved values so clean/faulty/safeguard runs match
+        saved = json.load(open(thr_path))
+        if set(saved) >= set(thr):
+            thr = saved
+            print("using saved thresholds")
+    json.dump(thr, open(thr_path, "w"), indent=2)
+    print("thresholds", json.dumps(thr, indent=2))
+    rel = Reliability(ens, cfg, maha_emb, maha_rec, thr)
 
     Xte, mte = X[te], meta[te].reset_index(drop=True)
-    assess("clean", Xte, mte, ["none"] * len(mte), ens, maha, thr, cfg, out)
+    assess("clean", Xte, mte, ["none"] * len(mte), rel, out)
 
     rng = np.random.default_rng(args.seed)
     Xf, faults = Xte.copy(), ["none"] * len(mte)
@@ -171,12 +260,12 @@ def main():
         Xf[i] = inject_fault(Xf[i], cfg["fs"], faults[i], rng)
     mf = mte.copy()
     mf["exam_id"] = mf.exam_id + "_f"
-    assess("faulty", Xf, mf, faults, ens, maha, thr, cfg, out)
+    assess("faulty", Xf, mf, faults, rel, out)
 
     Xc = np.load(data / "cinc2017.npz")["X"]
     mc = pd.read_csv(data / "cinc2017_meta.csv")
     fc = ["noisy_recording" if c == "~" else "cross_device" for c in mc.cinc_class]
-    assess("cinc2017", Xc, mc, fc, ens, maha, thr, cfg, out)
+    assess("cinc2017", Xc, mc, fc, rel, out)
 
 
 if __name__ == "__main__":

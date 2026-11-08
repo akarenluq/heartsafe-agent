@@ -15,7 +15,7 @@ import nibabel as nib
 import numpy as np
 import pandas as pd
 
-from common import LABELS, find_metadata_csv, load_config, load_mnms_metadata
+from common import LABELS, find_metadata_csv, load_config, load_mnms_metadata, orthonormal_affine
 
 
 def split_of(path):
@@ -30,7 +30,7 @@ def split_of(path):
 
 
 def save3d(vol, ref, path, dtype):
-    out = nib.Nifti1Image(vol.astype(dtype), ref.affine)
+    out = nib.Nifti1Image(vol.astype(dtype), orthonormal_affine(ref.affine))
     out.header.set_zooms(ref.header.get_zooms()[:3])
     nib.save(out, str(path))
 

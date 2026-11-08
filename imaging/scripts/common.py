@@ -59,6 +59,16 @@ def load_mnms_metadata(csv_path):
     return meta.drop_duplicates("code").set_index("code")
 
 
+def orthonormal_affine(affine):
+    """Remove tiny rounding skew from a NIfTI affine (a few M&Ms files have it, and
+    SimpleITK refuses non-orthonormal directions). Keeps voxel sizes and origin."""
+    a = np.array(affine, dtype=np.float64)
+    zooms = np.linalg.norm(a[:3, :3], axis=0)
+    u, _, vt = np.linalg.svd(a[:3, :3] / zooms)
+    a[:3, :3] = (u @ vt) * zooms
+    return a
+
+
 def voxel_ml(img):
     return float(np.prod(img.header.get_zooms()[:3])) / 1000.0
 

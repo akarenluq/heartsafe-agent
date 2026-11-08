@@ -31,6 +31,10 @@ uncertainty:
 shift:
   threshold: auto                 # auto = quantile of training Mahalanobis distances
   quantile: 0.95
+  action: caveat                  # caveat = shift alone is noted on the review, not escalated
+                                  # escalate = every exam from an unfamiliar scanner goes to a clinician
+  severe_quantile: 0.99           # beyond this quantile of clean validation exams (all deployment
+                                  # scanners) the input is unlike anything validated: always escalated
 
 # Safeguards proposed by the equity audit. Only an administrator sets
 # approved: true. When approved, exams in that subgroup are escalated at a

@@ -107,11 +107,60 @@ def main():
         "device_shift": {
             "ptbxl_clean_flag_rate": round(float(clean.flagged.mean()), 4),
             "cinc2017_flag_rate": round(float(cinc.flagged.mean()), 4),
-            "cinc2017_device_shift_flag_rate": round(float(cinc.flags.fillna("").str.contains("device_shift").mean()), 4),
+            "cinc2017_device_shift_flag_rate": round(float(cinc["flags"].fillna("").str.contains("device_shift").mean()), 4),
             "cinc2017_noisy_recordings_flag_rate": round(float(cinc[cinc.cinc_class == "~"].flagged.mean()), 4)
             if (cinc.cinc_class == "~").any() else None,
         },
     }
+    # Which faults actually hurt the model (they matter most to catch).
+    ev["performance"]["by_fault"] = {f: perf(g, args.n_boot, rng) for f, g in faulty.groupby("fault")}
+    # Same-label device-shift test: normal vs AF only (PTB-XL 'abnormal' is mostly structural disease).
+    ev["performance"]["cinc2017_normal_vs_af"] = perf(cinc[cinc.cinc_class.isin(["N", "A"])], args.n_boot, rng)
+
+    # Real recording problems annotated by PTB-XL experts on lead I (no injected faults).
+    if "lead1_noise" in clean:
+        noisy = clean.lead1_noise.fillna("").astype(str) != ""
+        ev["reliability"]["annotated_noise_ptbxl"] = {
+            "n_annotated": int(noisy.sum()),
+            "flag_rate_annotated": round(float(clean[noisy].flagged.mean()), 4) if noisy.any() else None,
+            "repeat_rate_annotated": round(float((clean[noisy].suggested_action == "repeat").mean()), 4) if noisy.any() else None,
+            "flag_rate_not_annotated": round(float(clean[~noisy].flagged.mean()), 4),
+            "repeat_rate_not_annotated": round(float((clean[~noisy].suggested_action == "repeat").mean()), 4),
+            "by_kind": {k: round(float(clean[clean.lead1_noise.fillna("").str.contains(k)].flagged.mean()), 4)
+                        for k in ("static_noise", "burst_noise", "baseline_drift", "electrodes_problems")
+                        if clean.lead1_noise.fillna("").str.contains(k).any()},
+        }
+
+    # Does the shift score separate the new device from PTB-XL? (AUROC, clean PTB-XL test vs CinC 2017)
+    both = pd.concat([clean.assign(new_device=0), cinc.assign(new_device=1)])
+    ev["reliability"]["device_shift"]["separation_auroc"] = {
+        c: round(float(roc_auc_score(both.new_device, both[c])), 4)
+        for c in ("shift_score", "shift_embedding", "shift_recording") if c in both}
+
+    # Uncertainty vs errors: AUROC for spotting wrong predictions, and accuracy vs coverage.
+    ev["uncertainty"] = {}
+    fig, ax = plt.subplots(figsize=(5.5, 3.8))
+    for name, d in (("PTB-XL clean", clean), ("PTB-XL with faults", faulty), ("CinC 2017 (new device)", cinc)):
+        d = d[d.label >= 0].sort_values("uncertainty")
+        acc = (d.pred == d.label).values.astype(float)
+        cov = np.arange(1, len(d) + 1) / len(d)
+        run_acc = np.cumsum(acc) / np.arange(1, len(d) + 1)
+        ax.plot(cov[len(d) // 10:], run_acc[len(d) // 10:], label=name, lw=1.6)
+        cols = ["uncertainty"] + (["ensemble_spread"] if "ensemble_spread" in d else [])
+        ev["uncertainty"][name] = {
+            **{f"error_auroc_{c}": round(float(roc_auc_score(1 - acc, d[c])), 4) for c in cols if 0 < acc.mean() < 1},
+            "accuracy_all": round(float(acc.mean()), 4),
+            "accuracy_most_certain_80pct": round(float(run_acc[int(0.8 * len(d)) - 1]), 4),
+            "accuracy_most_certain_50pct": round(float(run_acc[int(0.5 * len(d)) - 1]), 4)}
+    ax.set_xlabel("Share of ECGs kept (most certain first)")
+    ax.set_ylabel("Accuracy on kept ECGs")
+    ax.set_title("ECG accuracy vs coverage, ranked by model uncertainty", fontsize=9)
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out / "accuracy_vs_coverage.png", dpi=180)
+    plt.close(fig)
+
     esc = pd.concat([faulty, cinc])
     esc = esc[esc.flagged == 1]
     appropriate = (esc.wrong == 1) | (esc.fault != "none") | (esc.label < 0)

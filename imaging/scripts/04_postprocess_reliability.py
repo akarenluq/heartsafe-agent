@@ -192,6 +192,14 @@ def main():
         }
         json.dump(thr, open(thr_path, "w"), indent=2)
         print(f"calibrated thresholds saved to {thr_path}")
+    if "shift_severe" not in thr:
+        # Beyond every scanner seen in clean held-out validation exams = unknown input; always escalated.
+        val = df[(df.split == "val") & (df.fault == "none")]
+        if len(val) < 10:
+            raise SystemExit("shift_severe needs clean validation exams: run the clean set first")
+        thr["shift_severe"] = float(val.shift_score.quantile(cfg["shift"].get("severe_quantile", 0.99)))
+        json.dump(thr, open(thr_path, "w"), indent=2)
+        print(f"severe-shift threshold {thr['shift_severe']:.2f} added to {thr_path}")
 
     def scale_for(r):
         s = 1.0
@@ -221,15 +229,21 @@ def main():
             f.append("rv_edv_out_of_range")
         if r.lv_cc_frac < pl["min_lv_component_fraction"]:
             f.append("lv_fragmented")
-        if r.shift_score > thr["shift"]:
+        if r.shift_score > thr["shift_severe"]:
+            f.append("severe_scanner_shift")
+        elif r.shift_score > thr["shift"]:
             f.append("scanner_shift")
         base_unc = r.uncertainty > thr["uncertainty"]
         unc = r.uncertainty > thr["uncertainty"] * scale_for(r)
+        # Scanner shift alone: a caveat on the review unless config says escalate
+        # (on M&Ms, shift-only exams were barely more often wrong than accepted ones).
+        shift_escalates = cfg.get("shift", {}).get("action", "caveat") == "escalate"
+        hard = [x for x in f if x != "scanner_shift" or shift_escalates]
 
         def decide(high_unc):
             if quality_fail:
                 return "repeat"
-            if len(f) > 0 or high_unc:
+            if hard or high_unc:
                 return "escalate"
             return "accept"
 
@@ -253,6 +267,8 @@ def main():
             "plausibility": {"lv_component_fraction": round(float(r.lv_cc_frac), 3)},
             "flags": [x for x in r["flags"].split(";") if x],
             "suggested_action": r.suggested_action,
+            "caveats": (["scanner differs from training scans; result accepted, review with care"]
+                        if "scanner_shift" in r["flags"] and r.suggested_action == "accept" else []),
             "explanation_files": {p: f"uncertainty_maps/{r.code}_{p}_entropy.nii.gz" for p in ("ED", "ES")},
             "metadata": {k: (None if pd.isna(r[k]) else r[k]) for k in ("vendor", "vendor_name", "centre", "sex", "age", "split")},
             "thresholds": thr,

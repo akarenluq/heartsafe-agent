@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=hs_train
-#SBATCH --cpus-per-task=12
-#SBATCH --mem=64G
-#SBATCH --time=10:00:00
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=24G
+#SBATCH --time=02:00:00
 #SBATCH --output=%x_%j.out
 # NEEDS_GPU
 # One fold, 250 epochs, 2d. If it times out, resubmit with --c added to continue.
