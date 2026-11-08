@@ -55,24 +55,53 @@ def assess_reading(hist, today, cfg, offset=0.0):
     return flags, notes
 
 
+FLAG_TEXT = {
+    # ECG pipeline
+    "low_quality": "poor signal quality", "noisy_signal": "noisy signal", "baseline_wander": "baseline wander",
+    "implausible_heart_rate": "implausible heart rate", "device_shift": "recording unlike the training ECGs",
+    # imaging pipeline
+    "scanner_shift": "scanner differs from training scans", "low_snr": "low image quality",
+    "severe_scanner_shift": "image far outside the validated range", "lv_slice_gap": "gap in LV coverage",
+    "lv_coverage": "incomplete LV coverage", "lvef_out_of_range": "EF outside the plausible range",
+    "esv_not_below_edv": "ESV not below EDV", "lv_edv_out_of_range": "LV volume outside the plausible range",
+    "rv_edv_out_of_range": "RV volume outside the plausible range", "lv_fragmented": "fragmented LV segmentation",
+    # both
+    "high_uncertainty": "model uncertain",
+}
+
+
 def assess_ecg(o, cfg):
-    """Is an ECG model output reliable enough to use as evidence?"""
+    """Is an ECG model output reliable enough to use as evidence?
+
+    A real pipeline output carries its own decision (suggested_action), made with
+    thresholds calibrated on held-out ECGs; the agent uses it as is. Simulated outputs
+    are checked against the thresholds in config.yaml."""
     r = cfg["reliability"]
     q = o.get("quality", {}).get("sqi", o.get("quality", {}).get("score", 1.0))
     unc = o.get("uncertainty", 0.0)
     prob = o.get("probability", o.get("prediction", {}).get("abnormal_prob", 0.0))
-    reasons = []
-    if q < r["ecg_min_quality"]:
-        reasons.append(f"signal quality {q:.2f}")
-    if unc > r["ecg_max_uncertainty"]:
-        reasons.append(f"model uncertainty {unc:.2f}")
-    if o.get("shift_score") is not None and "device_shift" in o.get("flags", []):
-        reasons.append("device shift")
-    return {"reliable": not reasons, "abnormal": prob >= r["ecg_abnormal_prob"], "prob": prob,
-            "quality": q, "uncertainty": unc, "reasons": reasons}
+    if "suggested_action" in o:
+        action = o["suggested_action"]
+        reasons = [FLAG_TEXT.get(f, f.replace("_", " ")) for f in o.get("flags", []) if f != "safeguard"]
+        if action != "accept" and not reasons:
+            reasons = ["ECG pipeline did not accept the result"]
+    else:
+        reasons = []
+        if q < r["ecg_min_quality"]:
+            reasons.append(f"signal quality {q:.2f}")
+        if unc > r["ecg_max_uncertainty"]:
+            reasons.append(f"model uncertainty {unc:.2f}")
+        if o.get("shift_score") is not None and "device_shift" in o.get("flags", []):
+            reasons.append("device shift")
+        action = "accept" if not reasons else ("repeat" if q < r["ecg_min_quality"] else "escalate")
+    return {"reliable": action == "accept", "action": action, "abnormal": prob >= r["ecg_abnormal_prob"],
+            "prob": prob, "quality": q, "uncertainty": unc, "reasons": list(dict.fromkeys(reasons))}
 
 
 def assess_mri(o):
     flags = o.get("flags", [])
-    return {"reliable": o.get("suggested_action", "accept") == "accept", "flags": flags,
-            "lvef": o.get("prediction", {}).get("lvef_pct")}
+    meta = o.get("metadata") or {}
+    return {"reliable": o.get("suggested_action", "accept") == "accept", "action": o.get("suggested_action", "accept"),
+            "flags": flags, "reasons": [FLAG_TEXT.get(f, f.replace("_", " ")) for f in flags],
+            "caveats": o.get("caveats", []), "lvef": o.get("prediction", {}).get("lvef_pct"),
+            "uncertainty": o.get("uncertainty"), "scanner": meta.get("vendor_name"), "exam_id": o.get("exam_id")}

@@ -105,8 +105,47 @@ def test_end_to_end_metrics(small_run):
     json.dumps(res, default=float)
 
 
+class _Block:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+class _FakeClient:
+    """Stands in for anthropic.Anthropic(): scripted tool calls, then submit_review."""
+    def __init__(self, script, fail=False):
+        self.script, self.fail, self.seen = list(script), fail, []
+        self.beta = self
+        self.messages = self
+
+    def create(self, **kw):
+        if self.fail:
+            raise ConnectionError("offline")
+        self.seen.append(kw["messages"])
+        return _Block(stop_reason="tool_use", content=self.script.pop(0))
+
+
+def test_orchestrator_tool_loop_and_fallback(small_run):
+    from heartsafe.orchestrator import orchestrate
+    *_, tr = small_run
+    case = next(c for c in tr.cases() if c["kind"] == "clinical")
+    submit = {"summary": "Weight is rising.", "why_flagged": "weight gain", "reliability_caveats": [],
+              "evidence_used": "readings trusted", "next_step_wording": "Call the patient today."}
+    client = _FakeClient([[_Block(type="tool_use", id="t1", name="get_case_facts", input={}),
+                           _Block(type="tool_use", id="t2", name="check_ecg", input={})],
+                          [_Block(type="tool_use", id="t3", name="submit_review", input=submit)]])
+    out = orchestrate(case, tr, "claude-sonnet-5-5", client=client, now_h=1.0)
+    assert out["source"] == "claude-sonnet-5-5" and out["tool_calls"] == ["get_case_facts", "check_ecg", "submit_review"]
+    assert "Weight is rising." in out["text"] and "clinical team" in out["text"]
+    results = client.seen[1][2]["content"]                       # both tool results in ONE user message
+    assert [r["tool_use_id"] for r in results] == ["t1", "t2"]
+    assert any(a["action"] == "llm_review" for a in tr.audit(case["case_id"]))
+    out = orchestrate(case, tr, "claude-sonnet-5-5", client=_FakeClient([], fail=True))
+    assert out["source"] == "template" and "unavailable" in out["text"]
+
+
 def test_equity_audit_runs(small_run):
     patients, feed, dec, cases, _, _, _ = small_run
     eq, props = audit(feed, patients, dec, cases, CFG)
-    assert set(eq.metric) == {"missed_day_rate", "repeat_rate", "hours_to_ack", "ack_within_deadline"}
+    assert set(eq.metric) == {"missed_day_rate", "repeat_rate", "ecg_unreliable_rate", "hours_to_ack",
+                              "ack_within_deadline"}
     assert all(not p["approved"] for p in props)

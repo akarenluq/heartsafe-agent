@@ -12,6 +12,7 @@ import pandas as pd
 METRICS = {
     "missed_day_rate": ("patient", "missed_rate", True, "Share of days with no reading"),
     "repeat_rate": ("patient", "repeat_rate", True, "Share of Medly alerts needing a repeat or correction"),
+    "ecg_unreliable_rate": ("patient", "ecg_unreliable_rate", True, "Share of ECG checks not reliable enough to use"),
     "hours_to_ack": ("case", "hours_to_ack", True, "Hours from case creation to acknowledgement"),
     "ack_within_deadline": ("case", "ack_in_time", False, "Share of cases acknowledged within deadline"),
 }
@@ -33,6 +34,12 @@ def tables(feed, patients, decisions, cases):
     rep = decisions[decisions.decision.isin(["repeat", "filtered"])].groupby("patient_id").size()
     per_p["missed_rate"] = per_p.missed / per_p.days
     per_p["repeat_rate"] = (rep.reindex(per_p.index).fillna(0) / per_p.alerts.replace(0, np.nan))
+    per_p["ecg_unreliable_rate"] = np.nan
+    if "ecg_checked" in decisions:
+        e = decisions[decisions.ecg_checked.fillna(False).astype(bool)]
+        if len(e):
+            per_p["ecg_unreliable_rate"] = (1 - e.ecg_reliable.astype(float)).groupby(e.patient_id).mean() \
+                .reindex(per_p.index)
     per_p = per_p.join(patients.set_index("patient_id"))
     c = cases[cases.kind == "clinical"].merge(patients, on="patient_id")
     c["hours_to_ack"] = c.acknowledged_h - c.created_h
@@ -68,6 +75,12 @@ def audit(feed, patients, decisions, cases, cfg, seed=0):
                               "evidence": f"{r.label}: {r.mean:.2f} (95% CI {r.ci_low:.2f}-{r.ci_high:.2f}, n={r.n})",
                               "effect": "earlier reminders and backup routing for this group; adds reminders",
                               "approved": False})
+        elif r.metric == "ecg_unreliable_rate":
+            proposals.append({"id": f"ecg_support:{r.group}={r.value}", "type": "recommendation",
+                              "field": r.group, "value": r.value,
+                              "evidence": f"{r.label}: {r.mean:.2f} (95% CI {r.ci_low:.2f}-{r.ci_high:.2f}, n={r.n})",
+                              "effect": "recommend ECG recording coaching and device checks for this group "
+                                        "(program decision, not automated)", "approved": False})
         else:
             proposals.append({"id": f"support_outreach:{r.group}={r.value}", "type": "recommendation",
                               "field": r.group, "value": r.value,

@@ -59,6 +59,10 @@ class Tracker:
                         (severity, ack_deadline_h, case_id))
         self._log(case_id, t, "heartsafe", "agent", "severity_up", {"severity": severity})
 
+    def log_llm(self, case_id, t, detail):
+        """An LLM-written review was produced (or failed): logged, never a state change."""
+        self._log(case_id, t, "heartsafe", "agent", "llm_review", detail)
+
     def remind(self, case_id, t, to="primary"):
         self.db.execute("UPDATE cases SET reminders=reminders+1, assigned_to=? WHERE case_id=?", (to, case_id))
         self._log(case_id, t, "heartsafe", "agent", "reminder", {"to": to})

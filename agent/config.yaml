@@ -21,6 +21,11 @@ simulation:
   ecg_kit_share: 0.7                         # patients with a single-lead ECG device
   ecg_quality_beta: {urban: [9, 2], rural: [8, 2], remote: [5, 3]}
   mri_referral_prob: 0.3                     # resolved critical cases sent for cardiac MRI
+  # Only when real model outputs are plugged in (--ecg / --imaging): which recording a patient gets.
+  ecg_fault_share: {urban: 0.10, rural: 0.15, remote: 0.30}       # ECGs drawn from fault-injected recordings
+  regional_scanner_share: {urban: 0.1, rural: 0.5, remote: 0.8}   # MRI on a scanner the model never saw
+  mri_fault_share: {urban: 0.05, rural: 0.10, remote: 0.15}       # MRIs drawn from fault-injected exams
+  imaging_seen_vendors: [A, B]                                    # M&Ms vendors in nnU-Net training
 
 # Medly-style alert rules. Medly's own clinically validated algorithm is not
 # public; these follow common heart-failure telemonitoring thresholds.

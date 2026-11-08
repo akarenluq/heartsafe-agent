@@ -5,9 +5,16 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+import subprocess
+import sys
+from pathlib import Path
+
 from heartsafe import DATA, load_config
-from heartsafe.review import llm_rewrite, render
+from heartsafe.orchestrator import orchestrate
+from heartsafe.review import render
 from heartsafe.tracker import PermissionDenied, Tracker
+
+ROOT = Path(__file__).resolve().parent.parent
 
 st.set_page_config(page_title="HeartSafe", page_icon=":anatomical_heart:", layout="wide")
 if not (DATA / "heartsafe.db").exists():
@@ -40,7 +47,7 @@ st.sidebar.caption("Trust and coordination layer on top of Medly-style remote mo
 role = st.sidebar.selectbox("Signed in as", ["clinician", "administrator"])
 user = st.sidebar.text_input("Name", "nurse_demo" if role == "clinician" else "admin_demo")
 page = st.sidebar.radio("View", ["Patient journey", "Clinician queue", "Equity audit", "Results vs Medly alone",
-                                 "How it works"])
+                                 "Model reliability", "How it works"])
 st.sidebar.caption(f"Simulation clock: day {now / 24:.0f}. Medly data here is simulated; Medly is not open source.")
 
 
@@ -62,12 +69,28 @@ def show_case(case):
     c1, c2 = st.columns([3, 2])
     with c1:
         st.markdown(render(review))
-        if st.button("Reword with LLM", key=f"llm{case['case_id']}"):
-            text, src = llm_rewrite(review, cfg["review"]["llm_model"])
-            st.info(text)
-            st.caption(f"source: {src}")
+        if st.button("Explain with AI agent", key=f"llm{case['case_id']}",
+                     help="Claude calls read-only tools over this case and writes the review. "
+                          "The decision and deadlines stay with the policy and the clinical team."):
+            with st.spinner("Agent gathering facts..."):
+                out = orchestrate(case, tr, cfg["review"]["llm_model"], now_h=now)
+            st.info(out["text"])
+            st.caption(f"source: {out['source']}" + (f" | tools called: {', '.join(out['tool_calls'])}"
+                                                      if out["tool_calls"] else ""))
     with c2:
         st.altair_chart(vitals_chart(case["patient_id"], review["day"]), width="stretch")
+        if review.get("ecg"):
+            e = review["ecg"]
+            msg = (f"ECG: {'abnormal' if e['abnormal'] else 'no abnormality'} (p={e['prob']:.2f}), "
+                   f"quality {e['quality']:.2f}")
+            (st.success if e["reliable"] else st.warning)(
+                msg + ("" if e["reliable"] else f"  \nNot used: {', '.join(e.get('reasons') or [])}"))
+        if review.get("mri"):
+            m = review["mri"]
+            msg = f"MRI{' (' + m['scanner'] + ' scanner)' if m.get('scanner') else ''}: LVEF {m['lvef']}%"
+            (st.success if m["reliable"] else st.warning)(
+                msg + ("" if m["reliable"] else f"  \nFlagged: {', '.join(m.get('reasons') or m['flags'])}")
+                + ("".join(f"  \n{c}" for c in m.get("caveats") or [])))
     st.markdown("**Audit log**")
     log = pd.DataFrame(tr.audit(case["case_id"]))
     log["day"] = (log.t_h / 24).round(2)
@@ -149,7 +172,7 @@ elif page == "Equity audit":
             if p["type"] == "recommendation":
                 st.caption("Program recommendation; not applied automatically.")
             elif p["id"] in approved_ids:
-                st.success("Approved. Re-run `python -m heartsafe.run` to apply it.")
+                st.success(f"Approved by {next(s.get('approved_by', '?') for s in approved if s['id'] == p['id'])}.")
             elif role == "administrator":
                 if st.button("Approve safeguard", key=p["id"]):
                     approved.append({**p, "approved": True, "approved_by": user})
@@ -157,6 +180,30 @@ elif page == "Equity audit":
                     st.rerun()
             else:
                 st.caption("Needs administrator approval.")
+
+    applied = set((load("evaluation.json") or {}).get("safeguards_applied", []))
+    pending = approved_ids - applied
+    if pending and role == "administrator":
+        st.warning(f"Approved but not applied yet: {', '.join(sorted(pending))}")
+        if st.button("Apply approved safeguards now (re-runs the cohort, about 1 minute)", type="primary"):
+            with st.spinner("Re-running HeartSafe on the cohort with the approved safeguards..."):
+                r = subprocess.run([sys.executable, "-m", "heartsafe.run"], cwd=Path(__file__).parent,
+                                   capture_output=True, text=True)
+            if r.returncode == 0:
+                st.cache_data.clear()
+                st.cache_resource.clear()
+                st.rerun()
+            else:
+                st.error(r.stderr[-2000:])
+    effect = (load("evaluation.json") or {}).get("safeguard_effect")
+    if effect and "note" not in effect:
+        st.subheader("What the approved safeguards changed")
+        c = st.columns(3)
+        c[0].metric("Extra clinical cases / 100 patient-months", f"{effect['extra_clinical_cases_per_100_pm']:+.1f}")
+        c[1].metric("Extra false alarms / 100 patient-months", f"{effect['extra_false_alarms_per_100_pm']:+.1f}")
+        c[2].metric("Extra reminders sent", f"{effect['extra_reminders']:+d}")
+        st.dataframe(pd.DataFrame(effect["targeted_groups"]), hide_index=True, width="stretch")
+        st.caption("Before = the last run with no approved safeguards. Same cohort and seed.")
 
 elif page == "Results vs Medly alone":
     st.header("HeartSafe vs Medly alone (simulated cohort)")
@@ -180,9 +227,99 @@ elif page == "Results vs Medly alone":
         x=alt.X("remoteness:N", sort=["urban", "rural", "remote"], title=None, axis=alt.Axis(labelAngle=0)),
         xOffset="arm:N", y=alt.Y("hours:Q", title="Mean hours to acknowledge"),
         color=alt.Color("arm:N", title=None)).properties(height=280), width="stretch")
+
+    st.subheader("Follow-up")
+    res, stl = r.get("resolution", {}), r.get("stalled_cases", {})
+    rows = []
+    if res:
+        rows += [{"Measure": "Escalations resolved within deadline",
+                  "HeartSafe": f"{res['heartsafe']['resolved_within_deadline']:.0%}",
+                  "Medly alone": f"{res['medly_alone']['resolved_within_deadline']:.0%}"},
+                 {"Measure": "Median hours to resolution", "HeartSafe": res["heartsafe"]["median_hours_to_resolution"],
+                  "Medly alone": res["medly_alone"]["median_hours_to_resolution"]}]
+    if stl:
+        rows.append({"Measure": "Stalled cases found",
+                     "HeartSafe": f"{stl['heartsafe']['flagged_by_reminder']} of {stl['heartsafe']['simulated_to_stall']}",
+                     "Medly alone": f"0 of {stl['medly_alone']['simulated_to_stall']}"})
+    if rows:
+        st.dataframe(pd.DataFrame(rows).astype(str), hide_index=True, width="stretch")
+
+    me = r.get("model_evidence", {})
+    if me:
+        st.subheader(f"Model evidence ({r['sources']['ecg']} for ECG, {r['sources']['mri']} for MRI)")
+        rows = [{"Input": k.upper(), "Checks": v["n"], "Faulty or wrong": v["n_positive"],
+                 "Caught (sensitivity)": f"{v['sensitivity']:.0%}" if v["sensitivity"] is not None else "-",
+                 "Good results used (specificity)": f"{v['specificity']:.0%}" if v["specificity"] is not None else "-"}
+                for k, v in me.items()]
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        st.caption("Ground truth = injected faults (ECG), or injected faults, LVEF error > 10 points or "
+                   "LV Dice < 0.8 (MRI). Which patients get faulty recordings is a simulation assumption.")
     st.json(r, expanded=False)
     st.caption("Clinician response times, device fault rates and missing-data rates are simulation assumptions "
                "(config.yaml), identical for both arms.")
+
+elif page == "Model reliability":
+    st.header("Model reliability")
+    st.caption("Held-out results of the ECG and cardiac MRI pipelines (run on SDRE). "
+               "Copy fresh results with fetch_results.sh.")
+
+    def jload(p):
+        p = ROOT / p
+        return json.load(open(p)) if p.exists() else None
+
+    def img(p, caption):
+        if (ROOT / p).exists():
+            st.image(str(ROOT / p), caption=caption)
+
+    tab_ecg, tab_mri = st.tabs(["ECG (PTB-XL lead I)", "Cardiac MRI (M&Ms)"])
+    with tab_ecg:
+        ev = jload("ecg/results/evaluation.json")
+        if not ev:
+            st.info("No ECG results on this machine yet.")
+        else:
+            p = ev["performance"]
+            inj = ev["reliability"]["injected_faults"]["agent"]
+            c = st.columns(4)
+            c[0].metric("AUROC, PTB-XL test", f"{p['ptbxl_test_clean']['auroc_ci'][0]:.3f}")
+            c[1].metric("AUROC, new device (AliveCor)", f"{p['cinc2017_device_shift']['auroc_ci'][0]:.3f}",
+                        f"{-p['device_shift_auroc_drop']:+.3f}")
+            c[2].metric("Injected faults caught", f"{inj['sensitivity']:.0%}")
+            c[3].metric("Clean ECGs accepted", f"{inj['specificity']:.0%}")
+            st.dataframe(pd.DataFrame([{"Fault": k, "Caught": f"{v:.0%}"} for k, v in
+                                       ev["reliability"]["injected_faults"]["detection_by_fault"].items()]),
+                         hide_index=True)
+            a, b = st.columns(2)
+            with a:
+                img("ecg/results/accuracy_vs_coverage.png", "Accuracy rises as the least certain ECGs are set aside")
+            with b:
+                img("ecg/results/audit/forest_accuracy.png", "Subgroup accuracy, bootstrap 95% CIs")
+    with tab_mri:
+        rel = jload("imaging/results/reliability.json")
+        if not rel:
+            st.info("No imaging results on this machine yet.")
+        else:
+            cl = ROOT / "imaging/results/clean/exam_results.csv"
+            if cl.exists():
+                d = pd.read_csv(cl)
+                v = d.groupby("vendor_name")[["dice_lv", "dice_myo", "dice_rv", "lvef_abs_err"]].mean().round(3)
+                v.insert(0, "n", d.groupby("vendor_name").size())
+                st.markdown("**Segmentation on 170 held-out subjects** (GE and Canon never seen in training)")
+                st.dataframe(v.rename(columns={"lvef_abs_err": "LVEF error (points)"}), width="stretch")
+            pol = []
+            for f, name in (("reliability_v1_shift_escalates.json", "Scanner shift always escalates"),
+                            ("reliability_v2_shift_caveat.json", "Shift = caveat"),
+                            ("reliability.json", "Shift = caveat, severe shift escalates (current)")):
+                x = jload(f"imaging/results/{f}")
+                if x:
+                    pol.append({"Policy": name,
+                                "Faults caught": f"{x['agent_vs_injected_faults']['sensitivity']:.0%}",
+                                "Clean exams flagged": f"{x['by_fault']['none']['flagged_share']:.0%}",
+                                "Wrong predictions missed": x["missed_wrong_predictions_agent"]})
+            pol.insert(0, {"Policy": "No agent", "Faults caught": "0%", "Clean exams flagged": "0%",
+                           "Wrong predictions missed": rel["missed_wrong_predictions_baseline"]})
+            st.markdown("**Reliability policy comparison**")
+            st.dataframe(pd.DataFrame(pol), hide_index=True, width="stretch")
+            img("imaging/results/audit/forest_lv_dice.png", "Subgroup LV Dice, bootstrap 95% CIs")
 
 else:
     st.header("How HeartSafe works")

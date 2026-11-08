@@ -33,7 +33,65 @@ def fault_driven(feed, rules):
     return f[(f.medly_level > 0) & (f.clean_level == 0) & (~f.gt_episode)]
 
 
-def evaluate(feed, patients, decisions, cases, baseline, horizon_h, rules=None):
+def _sens_spec(flagged, positive):
+    flagged, positive = np.asarray(flagged, bool), np.asarray(positive, bool)
+    return {"n": int(len(flagged)), "n_positive": int(positive.sum()),
+            "sensitivity": round(float(flagged[positive].mean()), 3) if positive.any() else None,
+            "specificity": round(float(1 - flagged[~positive].mean()), 3) if (~positive).any() else None}
+
+
+def resolution(clinical, baseline, horizon_h, followup_cfg):
+    """Follow-up completion (resolved within the resolve deadline) and time to resolution.
+    Items still open at the end count as not resolved; only items whose deadline fell
+    inside the simulated window are scored for completion."""
+    out = {}
+    if followup_cfg is None:
+        return out
+    dl = followup_cfg["resolve_deadline_h"]
+    a = clinical.assign(deadline=clinical.created_h + clinical.severity.map(dl))
+    b = baseline.assign(deadline=baseline.created_h + baseline.severity.map(dl))
+    for name, d in (("heartsafe", a), ("medly_alone", b)):
+        due = d[d.deadline <= horizon_h]
+        hours = (d.resolved_h - d.created_h)
+        out[name] = {"items": int(len(d)),
+                     "resolved_within_deadline": round(float((due.resolved_h <= due.deadline).mean()), 3) if len(due) else None,
+                     "resolved_by_end": round(float(d.resolved_h.notna().mean()), 3) if len(d) else None,
+                     "median_hours_to_resolution": round(float(hours.median()), 1) if hours.notna().any() else None}
+    return out
+
+
+def stalled(clinical, baseline):
+    """Cases that would have stalled (clinician forgot) vs how many HeartSafe caught with a reminder."""
+    if "gt_stalled" not in clinical:
+        return {}
+    s = clinical[clinical.gt_stalled.fillna(False).astype(bool)]
+    return {"heartsafe": {"simulated_to_stall": int(len(s)), "flagged_by_reminder": int((s.reminders > 0).sum()),
+                          "resolved_by_end": int(s.resolved_h.notna().sum())},
+            "medly_alone": {"simulated_to_stall": int(baseline.lost.sum()), "flagged": 0,
+                            "note": "no tracking: a forgotten alert is never found"}}
+
+
+def model_evidence(decisions):
+    """How the real (or simulated) ECG and MRI results were judged, against injected faults."""
+    out = {}
+    if "ecg_checked" in decisions:
+        e = decisions[decisions.ecg_checked.fillna(False).astype(bool)]
+        if len(e):
+            out["ecg"] = {**_sens_spec(~e.ecg_reliable.astype(bool), e.gt_ecg_fault.fillna("none") != "none"),
+                          "unreliable_share": round(float((~e.ecg_reliable.astype(bool)).mean()), 3),
+                          "actions": e.ecg_action.value_counts().to_dict()}
+    if "mri_reliable" in decisions:
+        m = decisions[decisions.mri_reliable.notna()]
+        if len(m):
+            out["mri"] = {**_sens_spec(~m.mri_reliable.astype(bool), m.gt_mri_unreliable.astype(bool)),
+                          "review_cases": int((m.decision == "imaging_review").sum()),
+                          "accepted": int((m.decision == "imaging_accept").sum()),
+                          "regional_scanner_share": round(float(m.gt_mri_regional.astype(bool).mean()), 3),
+                          "note": "positive = injected fault, LVEF error > 10 points or LV Dice < 0.8"}
+    return out
+
+
+def evaluate(feed, patients, decisions, cases, baseline, horizon_h, rules=None, followup_cfg=None):
     patient_months = len(patients) * (feed.day.max() + 1) / 30.0
     ep_idx = {(r.patient_id, r.day): r.gt_episode for r in feed[["patient_id", "day", "gt_episode"]].itertuples()}
     eps = episodes(feed)
@@ -97,6 +155,9 @@ def evaluate(feed, patients, decisions, cases, baseline, horizon_h, rules=None):
             "false_alarms_heartsafe": round(100 * false_agent / patient_months, 1),
             "false_alarms_medly_alone": round(100 * false_medly / patient_months, 1)},
         "agent_actions": decisions.decision.value_counts().to_dict(),
+        "resolution": resolution(clinical, baseline, horizon_h, followup_cfg),
+        "stalled_cases": stalled(clinical, baseline),
+        "model_evidence": model_evidence(decisions),
         "followup": {
             "cases": int(len(cases)), "reminders_sent": int(cases.reminders.sum()),
             "clinical_cases_ack_within_deadline": round(float(

@@ -21,16 +21,20 @@ def build_review(patient, day, rules_fired, hist, today, severity, flags, notes,
                                       "sbp": today["sbp"], "hr": today["hr"]}] if today else [])
     caveats = list(notes)
     if ecg and not ecg["reliable"]:
-        caveats.append("ECG not used as evidence (" + ", ".join(ecg["reasons"]) + "); repeat ECG requested")
+        what = "repeat ECG requested" if ecg.get("action", "repeat") == "repeat" else "ECG left for clinician review"
+        caveats.append("ECG not used as evidence (" + ", ".join(ecg["reasons"]) + "); " + what)
     if mri and not mri["reliable"]:
-        caveats.append("MRI measurements need expert review (" + ", ".join(mri["flags"]) + ")")
+        caveats.append("MRI measurements need expert review (" + ", ".join(mri.get("reasons") or mri["flags"]) + ")")
+    if mri and mri.get("caveats"):
+        caveats += mri["caveats"]
     return {
         "kind": kind, "patient_id": patient["patient_id"], "day": day, "severity": severity,
         "context": {k: patient[k] for k in ("remoteness", "sex", "age", "device")},
         "why_flagged": rules_fired,
         "symptoms": [s for s in ("sob", "swelling") if today and today.get(s)],
         "trend": trend,
-        "ecg": None if not ecg else {k: ecg[k] for k in ("reliable", "abnormal", "prob", "quality", "uncertainty")},
+        "ecg": None if not ecg else {k: ecg.get(k) for k in ("reliable", "action", "abnormal", "prob", "quality",
+                                                             "uncertainty", "reasons")},
         "mri": mri,
         "reliability_flags": flags,
         "caveats": caveats,
@@ -60,7 +64,9 @@ def render(review):
                          f"(model probability {e['prob']:.2f}).")
     if r["mri"]:
         m = r["mri"]
-        lines.append(f"Cardiac MRI: LVEF {m['lvef']}%" + ("" if m["reliable"] else " (flagged)") + ".")
+        where = f" ({m['scanner']} scanner)" if m.get("scanner") else ""
+        unc = f", segmentation uncertainty {m['uncertainty']:.3f}" if m.get("uncertainty") is not None else ""
+        lines.append(f"Cardiac MRI{where}: LVEF {m['lvef']}%{unc}" + ("" if m["reliable"] else " (flagged)") + ".")
     if r["caveats"]:
         lines.append("Reliability caveats: " + "; ".join(r["caveats"]) + ".")
     lines.append("Suggested next step: " + r["next_step"])

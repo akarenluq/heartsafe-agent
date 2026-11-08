@@ -23,7 +23,7 @@ def followup_times(severity, remoteness, ack_window_h, resolve_window_h, cfg, rn
     sent = []
     if not reminders:
         if forgot:
-            return {"ack": None, "resolve": None, "reminders": sent, "lost": True}
+            return {"ack": None, "resolve": None, "reminders": sent, "lost": True, "forgot": True}
         ack = natural
     elif forgot or natural > ack_window_h:
         sent.append((ack_window_h, "primary"))
@@ -38,4 +38,5 @@ def followup_times(severity, remoteness, ack_window_h, resolve_window_h, cfg, rn
     if reminders and resolve > resolve_window_h:
         sent.append((resolve_window_h, "primary"))
         resolve = max(ack + 0.5, min(resolve, resolve_window_h + 2 * resp()))
-    return {"ack": ack, "resolve": resolve, "reminders": sent, "lost": False}
+    # forgot = the case would have stalled without tracking (ground truth for the evaluation)
+    return {"ack": ack, "resolve": resolve, "reminders": sent, "lost": False, "forgot": forgot}

@@ -27,6 +27,7 @@ class PatientState:
     def __init__(self):
         self.hist, self.offset, self.pending_step, self.missed = [], 0.0, None, 0
         self.case_id, self.case_resolved_h = None, None
+        self.mri_done = False
 
 
 class HeartSafeAgent:
@@ -40,6 +41,7 @@ class HeartSafeAgent:
         # never by the agent's decisions.
         self._truth = truth or {}
         self.decisions = []
+        self.gt_cases = []  # per case: would it have stalled without tracking (evaluation only)
 
     # ---- helpers -------------------------------------------------------
     def _ack_window(self, patient, severity):
@@ -59,6 +61,7 @@ class HeartSafeAgent:
         cid = self.tr.create(patient["patient_id"], kind, severity, now, ack_h, res_h, review)
         f = followup_times(severity, patient["remoteness"], ack_h, res_h, self.cfg, self.rng, reminders=True,
                            force_forget=patient["patient_id"] == "DEMO-MARY" and kind == "clinical")
+        self.gt_cases.append({"case_id": cid, "gt_stalled": bool(f.get("forgot"))})
         for t, to in f["reminders"]:
             if now + t <= self.horizon:
                 self.tr.remind(cid, now + t, to)
@@ -154,10 +157,14 @@ class HeartSafeAgent:
                                 notes=" | ".join(notes) or "alert not supported after data-quality correction")
 
         # 4. evidence from the ECG device, if the patient has one
-        ecg = None
+        ecg, ecg_log = None, {}
         if p["ecg_kit"]:
             truth = self._truth.get((p["patient_id"], row.day), False)
-            ecg = assess_ecg(ecg_output(p, truth, self.cfg, self.rng, self.ecg_pool), self.cfg)
+            out, gt = ecg_output(p, truth, self.cfg, self.rng, self.ecg_pool,
+                                 demo=p["patient_id"] == "DEMO-MARY" and truth)
+            ecg = assess_ecg(out, self.cfg)
+            ecg_log = {"ecg_checked": True, "ecg_reliable": ecg["reliable"], "ecg_action": ecg["action"],
+                       "ecg_abnormal": ecg["abnormal"], "gt_ecg_fault": gt.get("fault", "none")}
             if not ecg["reliable"]:
                 flags.append("ecg_unreliable")
         severity = SEV[level]
@@ -172,26 +179,35 @@ class HeartSafeAgent:
             case = self.tr.get(open_id)
             if RANK[severity] > RANK[case["severity"]] and case["state"] == "created":
                 self.tr.escalate_severity(open_id, now, severity, now + self._ack_window(p, severity))
-            return self._record(row, "escalate_update", severity=severity, case_id=open_id, flags=";".join(flags))
+            return self._record(row, "escalate_update", severity=severity, case_id=open_id, flags=";".join(flags),
+                                **ecg_log)
 
         review = build_review(p, row.day, fired, st.hist, today, severity, flags, notes, ecg=ecg, ack_h="{ack}")
         cid, resolved_h = self._create_case(p, st, now, "clinical", severity, review)
-        self._record(row, "escalate", severity=severity, case_id=cid, flags=";".join(flags))
+        self._record(row, "escalate", severity=severity, case_id=cid, flags=";".join(flags), **ecg_log)
 
         # 6. imaging follow-up for some critical cases: MRI results get their own reliability check
+        demo = p["patient_id"] == "DEMO-MARY" and not st.mri_done
         if severity == "critical" and resolved_h and (
-                p["patient_id"] == "DEMO-MARY" or self.rng.random() < self.cfg["simulation"]["mri_referral_prob"]):
+                demo or self.rng.random() < self.cfg["simulation"]["mri_referral_prob"]):
+            st.mri_done = True
             t_mri = resolved_h + 72
             if t_mri <= self.horizon:
                 truth = self._truth.get((p["patient_id"], row.day), False)
-                mri = assess_mri(mri_output(truth, self.rng, self.mri_pool))
-                if not mri["reliable"] or p["patient_id"] == "DEMO-MARY":
+                out, gt = mri_output(p, truth, self.cfg, self.rng, self.mri_pool, demo=demo)
+                mri = assess_mri(out)
+                mri_log = {"patient_id": p["patient_id"], "day": int(t_mri // 24), "medly_level": 0, "medly_rules": "",
+                           "flags": ";".join(mri["flags"]), "mri_reliable": mri["reliable"],
+                           "mri_scanner": mri["scanner"], "gt_mri_fault": gt["fault"],
+                           "gt_mri_unreliable": gt["unreliable"], "gt_mri_regional": gt["regional"]}
+                if not mri["reliable"] or demo:
                     rv = build_review(p, int(t_mri // 24), ["cardiac MRI result returned"], st.hist, None,
                                       "caution", mri["flags"], [], mri=mri, kind="imaging", ack_h="{ack}")
                     mcid, _ = self._create_case(p, st, t_mri, "imaging", "caution", rv)
-                    self.decisions.append({"patient_id": p["patient_id"], "day": int(t_mri // 24), "medly_level": 0,
-                                           "medly_rules": "", "decision": "imaging_review", "severity": "caution",
-                                           "case_id": mcid, "flags": ";".join(mri["flags"])})
+                    self.decisions.append({**mri_log, "decision": "imaging_review", "severity": "caution",
+                                           "case_id": mcid})
+                else:  # accepted (possibly with a caveat); documented, no case
+                    self.decisions.append({**mri_log, "decision": "imaging_accept"})
 
 
 def run_baseline(feed, patients, cfg, rng, horizon_h):

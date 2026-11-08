@@ -29,11 +29,16 @@ streamlit run app.py               # dashboard
 pytest                             # tests
 ```
 
-Plug in real model outputs (shared HeartSafe JSON format):
+Real model outputs are used automatically when `../ecg/results` and `../imaging/results`
+exist (clean + fault-injected sets; copy them from SDRE with `bash ../fetch_results.sh`).
+The agent then uses each pipeline's own calibrated decision (`suggested_action`, `flags`);
+`--simulated-models` ignores them, and `--ecg` / `--imaging` take other folders (comma-separated).
+Which patients get a faulty ECG or a scan on an unfamiliar scanner is a simulation
+assumption (`ecg_fault_share`, `regional_scanner_share`, `mri_fault_share` in `config.yaml`).
 
-```bash
-python -m heartsafe.run --imaging ../imaging/results/clean/exams --ecg ../ecg/results/exams
-```
+Safeguard loop: an administrator approves a proposal on the Equity audit page and presses
+"Apply approved safeguards now"; the cohort is re-run and the page shows the extra cases,
+false alarms and reminders against the last run without safeguards.
 
 Use a real Medly-style export instead of the simulation:
 `python -m heartsafe.run --feed export.csv --patients-csv patients.csv`
@@ -65,7 +70,8 @@ heartsafe/simulate.py  Medly-style cohort (+ scripted demo patient DEMO-MARY)
 heartsafe/medly.py     Medly adapter and Medly-style alert rules
 heartsafe/reliability.py  reading, ECG and MRI reliability checks
 heartsafe/signals.py   ECG quality index; loaders for ECG / imaging pipeline outputs
-heartsafe/review.py    explainable review (template; optional LLM rewording)
+heartsafe/review.py    explainable review (template)
+heartsafe/orchestrator.py  Claude tool-calling review writer with template fallback
 heartsafe/tracker.py   SQLite case tracker with audit log and permissions
 heartsafe/clinicians.py  assumed clinician response model
 heartsafe/agent.py     the agent and the Medly-alone baseline
@@ -75,8 +81,11 @@ heartsafe/run.py       command line entry point
 app.py                 Streamlit dashboard
 ```
 
-## LLM (optional)
+## LLM agent (optional)
 
-Set `ANTHROPIC_API_KEY` and press "Reword with LLM" on a case. The model gets
-only the structured facts and is told not to add any; the template is used if the
-call fails. Decisions never depend on the LLM.
+Set `ANTHROPIC_API_KEY` and press "Explain with AI agent" on a case. Claude
+(`review.llm_model` in `config.yaml`) calls read-only tools over the case (facts, data
+quality, ECG, MRI, follow-up status) and writes the review through `submit_review`
+(`heartsafe/orchestrator.py`). It explains; severity, actions and deadlines stay with the
+deterministic policy and the clinical team. Every run goes to the case's audit log, and the
+template review is shown if there is no key or the call fails.
