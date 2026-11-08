@@ -47,7 +47,7 @@ receive at onboarding.
         --modules "StdEnv/2023 python/3.11"
    ```
    Re-run it any time; it rewrites the `#SBATCH` lines and `slurm/site.env`.
-   If the wiki uses a different GPU request, add `--gpu-gres <value>` (default `gpu:1`).
+   GPUs are requested as `--gpus-per-node` (SDRE default form); pass `--gpus h200:1` to pin a type.
    Check the module names with `module avail python` and `module spider StdEnv`.
 4. **Environment, once, on a login node:** `bash slurm/setup_env.sh`
    It installs torch from the site wheels and nnU-Net from `wheelhouse/` (no internet needed),

@@ -2,20 +2,20 @@
 # One-time site setup. Values come from the SDRE Technical Wiki you get at onboarding.
 #
 #   bash slurm/configure_site.sh --root /path/to/project/heartsafe \
-#        --account YOUR_ACCOUNT --gpu-partition GPU_PARTITION [--cpu-partition CPU_PARTITION] \
-#        [--gpu-gres gpu:1] [--modules "StdEnv/2023 python/3.11"]
+#        --account YOUR_ACCOUNT [--gpu-partition GPU_PARTITION] [--cpu-partition CPU_PARTITION] \
+#        [--gpus 1 | --gpus h200:1] [--modules "StdEnv/2023 python/3.11"]
 #
 # Writes slurm/site.env and puts account/partition/GPU lines into every slurm/*.sbatch.
 set -e
 cd "$(dirname "$0")"
-GRES="gpu:1"; MODULES="StdEnv/2023 python/3.11"; CPU_PART=""
+GPUS="1"; MODULES="StdEnv/2023 python/3.11"; CPU_PART=""
 while [ $# -gt 0 ]; do
   case $1 in
     --root) ROOT=$2; shift 2;;
     --account) ACCOUNT=$2; shift 2;;
     --gpu-partition) GPU_PART=$2; shift 2;;
     --cpu-partition) CPU_PART=$2; shift 2;;
-    --gpu-gres) GRES=$2; shift 2;;
+    --gpus) GPUS=$2; shift 2;;
     --modules) MODULES=$2; shift 2;;
     *) echo "unknown option $1"; exit 1;;
   esac
@@ -34,7 +34,7 @@ for f in *.sbatch; do
   [ -n "$ACCOUNT" ] && lines="#SBATCH --account=$ACCOUNT"
   if grep -q "^# NEEDS_GPU" "$f"; then
     [ -n "$GPU_PART" ] && lines="$lines\n#SBATCH --partition=$GPU_PART"
-    lines="$lines\n#SBATCH --gres=$GRES"
+    lines="$lines\n#SBATCH --gpus-per-node=$GPUS"
   elif [ -n "$CPU_PART" ]; then
     lines="$lines\n#SBATCH --partition=$CPU_PART"
   fi

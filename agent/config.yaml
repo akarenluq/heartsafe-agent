@@ -1,0 +1,74 @@
+# HeartSafe coordination layer - configuration.
+# The agent reads these values; it never edits them. Safeguards approved by an
+# administrator live in data/safeguards.json, not here.
+
+cohort:
+  patients: 2000
+  days: 90
+  seed: 7
+
+# Simulated Medly-style cohort. Every number here is an ASSUMPTION for the
+# simulation, stated on the slides; none comes from Medly data.
+simulation:
+  remoteness_mix: [0.5, 0.25, 0.25]          # urban, rural, remote
+  missing_rate: {urban: 0.05, rural: 0.10, remote: 0.18}   # days with no reading
+  own_scale_share: {urban: 0.5, rural: 0.6, remote: 0.7}
+  scale_change_prob: {own_scale: 0.12, provided_kit: 0.04} # per patient over the period
+  unit_error_rate: 0.003                     # weight typed in lb instead of kg
+  cuff_error_rate: 0.005                     # badly placed BP cuff
+  symptom_base_rate: 0.008                   # daily chance of a symptom report without decompensation
+  episode_prob: 0.18                         # heart-failure decompensation in the period
+  ecg_kit_share: 0.7                         # patients with a single-lead ECG device
+  ecg_quality_beta: {urban: [9, 2], rural: [8, 2], remote: [5, 3]}
+  mri_referral_prob: 0.3                     # resolved critical cases sent for cardiac MRI
+
+# Medly-style alert rules. Medly's own clinically validated algorithm is not
+# public; these follow common heart-failure telemonitoring thresholds.
+medly_rules:
+  weight_gain_2d_kg: 1.5
+  weight_gain_7d_kg: 2.5
+  weight_gain_critical_kg: 3.5
+  sbp_low: 90
+  sbp_high: 180
+  hr_low: 45
+  hr_high: 120
+
+reliability:
+  weight_plausible_kg: [30, 250]
+  sbp_plausible: [60, 250]
+  hr_plausible: [25, 220]
+  unit_error_ratio: [1.9, 2.5]       # today / recent median, weight entered in lb
+  step_change_kg: 1.8                # one-day jump that suggests a new scale
+  step_persist_tolerance_kg: 1.0
+  cuff_jump_mmhg: 30
+  hr_stable_bpm: 10
+  stale_min_readings_7d: 4
+  missing_outreach_days: 3           # consecutive missed days -> outreach task
+  ecg_min_quality: 0.6
+  ecg_max_uncertainty: 0.35
+  ecg_abnormal_prob: 0.5
+
+followup:
+  ack_deadline_h: {critical: 4, caution: 24, low: 72}
+  resolve_deadline_h: {critical: 48, caution: 120, low: 168}
+
+# Assumed clinician response model for the simulation (same for both arms).
+clinicians:
+  median_ack_h:
+    critical: {urban: 2, rural: 3, remote: 5}
+    caution: {urban: 10, rural: 14, remote: 22}
+    low: {urban: 24, rural: 30, remote: 40}
+  ack_sigma: 0.8
+  forget_prob: 0.10              # alert/case slips through without tracking
+  ignore_reminder_prob: 0.2      # first reminder missed -> goes to backup clinician
+  response_after_reminder_h: 2
+  median_resolve_after_ack_h: {critical: 12, caution: 36, low: 48}
+
+equity:
+  groups: [remoteness, sex, age_band, device]
+  min_n: 30
+  n_boot: 1000
+  tighter_deadline_factor: 0.5
+
+review:
+  llm_model: claude-sonnet-5-5   # used only when ANTHROPIC_API_KEY is set and asked for

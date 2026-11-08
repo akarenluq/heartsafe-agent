@@ -11,3 +11,6 @@ preds/
 faulty/
 wheelhouse/
 imaging/slurm/site.env
+agent/data/
+.venv/
+.pytest_cache/
