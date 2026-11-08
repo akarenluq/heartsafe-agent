@@ -1,0 +1,47 @@
+# HeartSafe Agent - ECG path configuration.
+# The LLM orchestrator reads these values but must never edit them.
+# "auto" thresholds are calibrated once on PTB-XL validation (fold 9).
+
+fs: 250                 # every signal is resampled to this rate
+seconds: 10             # window length fed to the model
+lead: I                 # single lead, like a home ECG device
+
+# PTB-XL official patient-wise folds
+folds:
+  train: [1, 2, 3, 4, 5, 6, 7, 8]
+  val: [9]
+  test: [10]
+
+model:
+  members: 5            # deep ensemble; spread of member probabilities = uncertainty
+  epochs: 30
+  batch_size: 256
+  lr: 0.001
+  dropout: 0.2
+
+abnormal_prob: 0.5
+
+quality:
+  min_sqi: 0.6          # same as agent reliability.ecg_min_quality
+  hr_range_bpm: [30, 200]
+
+uncertainty:
+  threshold: auto       # auto = quantile of validation uncertainty
+  quantile: 0.90
+
+shift:
+  threshold: auto       # auto = quantile of validation embedding distances
+  quantile: 0.95
+
+faults:
+  fraction: 0.5         # share of PTB-XL test ECGs given a known fault
+  types: [noise, flatline, clipping, baseline_wander]
+
+# Safeguards proposed by the equity audit. Only an administrator sets
+# approved: true. When approved, ECGs in that subgroup are escalated at a
+# lower uncertainty threshold (threshold x uncertainty_scale).
+safeguards: []
+#  - field: device
+#    value: AT-6 C 5.5
+#    uncertainty_scale: 0.7
+#    approved: false
