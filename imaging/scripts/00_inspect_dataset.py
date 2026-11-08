@@ -9,11 +9,12 @@ from pathlib import Path
 from common import find_metadata_csv, load_mnms_metadata
 
 root = Path(sys.argv[1])
-imgs = sorted(root.rglob("*_sa.nii.gz"))
-gts = sorted(root.rglob("*_sa_gt.nii.gz"))
+NII = (".nii", ".nii.gz")  # releases ship either
+imgs = sorted(p for p in root.rglob("*_sa.nii*") if p.name.endswith(NII))
+gts = sorted(p for p in root.rglob("*_sa_gt.nii*") if p.name.endswith(NII))
 print(f"root: {root}")
-print(f"short-axis cines (*_sa.nii.gz): {len(imgs)}")
-print(f"ground truths (*_sa_gt.nii.gz): {len(gts)}")
+print(f"short-axis cines (*_sa.nii[.gz]): {len(imgs)}")
+print(f"ground truths (*_sa_gt.nii[.gz]): {len(gts)}")
 
 splits = Counter()
 for g in gts:
@@ -32,7 +33,7 @@ else:
         if col in meta:
             print(f"  {col}: {dict(meta[col].value_counts())}")
 
-other = Counter(p.suffix for p in root.rglob("*") if p.is_file() and not p.name.endswith(".nii.gz"))
+other = Counter(p.suffix for p in root.rglob("*") if p.is_file() and not p.name.endswith(NII))
 print("other file types:", dict(other.most_common(8)))
 if not gts:
-    print("\nThis does not look like M&Ms (no *_sa_gt.nii.gz). Send me the folder listing.")
+    print("\nThis does not look like M&Ms (no *_sa_gt.nii[.gz]). Send me the folder listing.")

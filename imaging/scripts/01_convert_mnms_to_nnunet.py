@@ -59,9 +59,10 @@ def main():
         print("WARNING: no metadata CSV found; ED/ES taken from labelled frames and the audit will lack subgroups.")
 
     rows, n_train, skipped = [], 0, []
-    for gt_path in sorted(root.rglob("*_sa_gt.nii.gz")):
-        code = gt_path.name.replace("_sa_gt.nii.gz", "")
-        img_path = gt_path.with_name(f"{code}_sa.nii.gz")
+    # Releases ship either .nii.gz or plain .nii
+    for gt_path in sorted(p for p in root.rglob("*_sa_gt.nii*") if p.name.endswith((".nii", ".nii.gz"))):
+        code, ext = gt_path.name.split("_sa_gt")
+        img_path = gt_path.with_name(f"{code}_sa{ext}")
         if not img_path.exists():
             skipped.append((code, "no image"))
             continue
