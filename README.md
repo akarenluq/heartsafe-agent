@@ -1,16 +1,43 @@
-# HeartSafe Agent — WAI Canada Hackathon 2026 (Team #40)
+# HeartSafe Agent — WAI Canada Hackathon 2026
 
 Equity-aware trust and coordination layer for remote cardiac monitoring (e.g. Medly, UHN): reliability checks,
 explainable reviews, tracked follow-up and equity monitoring, so existing monitoring is safer and accountable.
+The clinical team makes every decision.
 
-| Folder | What | Owner |
-| --- | --- | --- |
-| `imaging/` | Cardiac MRI segmentation, imaging reliability checks, imaging equity audit | Yassmin |
-| `ecg/` | Single-lead ECG classifier, ECG reliability checks | Ana Karen |
-| `agent/` | Coordination layer: Medly adapter, reliability, reviews, case tracker, equity monitor, dashboard | Vertika |
+## How it fits together
 
-Every model writes one JSON per exam with
-`{prediction, probability, uncertainty, quality, shift_score, metadata, flags, suggested_action}`;
-see `imaging/README.md` for the imaging fields. Data is never committed (see `.gitignore`).
+1. **Medly-style feed.** Daily weight, blood pressure, heart rate and symptoms, with Medly's own
+   normal / caution / critical alert (simulated cohort, since Medly is not open source).
+2. **Model signals.** A single-lead ECG classifier (`ecg/`) and cardiac MRI segmentation (`imaging/`) each write
+   one JSON per exam in a shared format:
+   `{prediction, probability, uncertainty, quality, shift_score, metadata, flags, suggested_action}`.
+3. **Reliability checks.** Each input and model output is checked (data quality, signal or image quality,
+   uncertainty, device or scanner shift, plausibility) and ends in accept / repeat measurement / escalate.
+4. **Explainable review.** Every escalation gets a structured review; an LLM can write the wording,
+   with a template fallback.
+5. **Tracked follow-up.** Cases go created → acknowledged → reviewed → resolved, with deadlines, reminders and an
+   audit log. Only a clinician moves or closes a case.
+6. **Equity monitor.** Subgroup metrics with bootstrap 95% CIs; gaps become safeguard proposals that an
+   administrator approves.
+7. **Evaluation.** HeartSafe against Medly alone on the simulated cohort, and each model against injected faults
+   and an unseen device or scanner.
 
-Quick start: `cd agent && pip install -r requirements.txt && python -m heartsafe.run && streamlit run app.py`.
+| Folder | What |
+| --- | --- |
+| `imaging/` | Cardiac MRI segmentation (nnU-Net, M&Ms), volumes and EF, imaging reliability, imaging equity audit |
+| `ecg/` | Single-lead ECG classifier (PTB-XL lead I), ECG reliability, PhysioNet 2017 device-shift test |
+| `agent/` | Medly adapter, reliability layer, reviews, case tracker, equity monitor, evaluation, dashboard |
+| `plans/` | Execution plan |
+
+Data, results and model weights are never committed (see `.gitignore`).
+
+## Run it
+
+1. **Train and evaluate the models** on a Slurm cluster (SDRE or Alliance): follow `imaging/README.md`, then
+   submit the ECG jobs from `ecg/` (`slurm/01_prepare.sbatch`, then `slurm/02_train_evaluate.sbatch`).
+2. **Copy the results to this machine:** `bash fetch_results.sh` (Git Bash; needs an open SSH connection, see the
+   top of the script). Results land in `imaging/results/` and `ecg/results/`.
+3. **Run the agent** on the simulated cohort with the real model outputs:
+   `cd agent && pip install -r requirements.txt && python -m heartsafe.run`
+4. **Open the dashboard:** `streamlit run app.py`
+5. **Run the tests:** `pytest`
