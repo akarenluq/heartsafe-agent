@@ -111,6 +111,12 @@ def main(argv=None):
     tr.commit()
     baseline = run_baseline(observable, patients, cfg, np.random.default_rng(seed + 2), horizon)
     cases = pd.DataFrame(tr.cases()).merge(pd.DataFrame(agent.gt_cases), on="case_id", how="left")
+    loops = pd.DataFrame(tr.loops())
+    if len(loops):
+        loops = loops.merge(pd.DataFrame(agent.gt_loops), on="case_id", how="left")
+        loops.to_csv(out / "loops.csv", index=False)
+        cases = cases.merge(loops[["case_id", "state", "outcome"]].rename(
+            columns={"state": "loop_state", "outcome": "loop_reason"}), on="case_id", how="left")
 
     if patients.attrs.get("screening"):
         json.dump(patients.attrs["screening"], open(out / "screening.json", "w"), indent=2)
@@ -120,7 +126,8 @@ def main(argv=None):
     baseline.to_csv(out / "baseline.csv", index=False)
 
     if "gt_episode" in feed:
-        res, er = evaluate(feed, patients, decisions, cases, baseline, horizon, cfg["alert_rules"], cfg["followup"])
+        res, er = evaluate(feed, patients, decisions, cases, baseline, horizon, cfg["alert_rules"], cfg["followup"],
+                           loops=loops)
         res["safeguards_applied"] = [s["id"] for s in safeguards if s.get("approved")]
         res["sources"] = {"ecg": "pipeline outputs" if ecg_pool else "simulated",
                           "mri": "imaging pipeline outputs" if mri_pool else "simulated"}

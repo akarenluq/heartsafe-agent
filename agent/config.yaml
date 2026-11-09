@@ -100,6 +100,24 @@ followup:
   ack_deadline_h: {critical: 4, caution: 24, low: 72}
   resolve_deadline_h: {critical: 48, caution: 120, low: 168}
 
+# Patient loop: after a clinician resolves a clinical case, HeartSafe sends the instruction,
+# waits for the patient to confirm and act, contacts a caregiver or community health worker
+# when they do not, and checks the readings afterwards (reopens if they did not improve).
+# Response numbers are ASSUMPTIONS for the simulation.
+patient_loop:
+  confirm_deadline_h: {critical: 2, caution: 12}
+  action_deadline_h: {critical: 6, caution: 48}
+  outcome_check_after_h: 72          # readings checked this long after the action
+  patient_median_confirm_h: {urban: 1.5, rural: 3, remote: 6}
+  patient_no_response: {urban: 0.08, rural: 0.15, remote: 0.25}   # no signal, phone off, missed message
+  helper_median_confirm_h: 3         # caregiver or community health worker, once contacted
+  helper_window_h: 8                 # time given to each helper before the next contact
+  helper_reach: 0.85
+  median_action_h: {critical: 2, caution: 12}
+  action_not_done: 0.12              # confirms but does not act on the first message
+  action_after_reminder: 0.7
+  safeguard_factor: 0.5              # approved safeguard: contact helpers twice as early
+
 # Assumed clinician response model for the simulation (same for both arms).
 clinicians:
   median_ack_h:

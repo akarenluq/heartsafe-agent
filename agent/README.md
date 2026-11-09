@@ -92,6 +92,27 @@ Cases go created -> acknowledged -> reviewed -> resolved. Missed deadlines send
 reminders, a second miss goes to a backup clinician, and only a clinician can move
 or close a case (`tracker.py`). Every action is in the audit log.
 
+## Patient loop
+
+After a clinician resolves a clinical case, HeartSafe follows the instruction to the patient
+(`loops` table in `tracker.py`, settings under `patient_loop` in `config.yaml`):
+
+1. **Notified.** The instruction is sent (app, text or call).
+2. **Confirmed.** If the patient does not confirm in time (2 h critical, 12 h caution), HeartSafe
+   contacts their caregiver, or the community health worker if there is none, then the community
+   health worker.
+3. **Action done.** If the action is not recorded in time, HeartSafe reminds whoever confirmed.
+4. **Readings checked** 72 h after the action: improved -> loop closed; not improved -> a clinical
+   case is reopened.
+
+Only the patient, a caregiver or a community health worker can record a confirmation or an action;
+the agent cannot. A patient who cannot be reached, or an instruction not completed, becomes a
+`patient_followup` task for the nurse. The comparison arm ("platform alone") sends one message with
+no follow-up. The equity audit compares the share of instructions completed across groups and can
+propose contacting helpers earlier for a group (`earlier_patient_followup`, administrator-approved).
+Patient response times and no-response rates are simulation assumptions, and the simulation does not
+model the effect of treatment, so "readings did not improve" reopens are not a measure of care quality.
+
 ## Files
 
 ```

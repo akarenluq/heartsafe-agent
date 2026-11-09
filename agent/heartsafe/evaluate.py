@@ -92,7 +92,39 @@ def model_evidence(decisions):
     return out
 
 
-def evaluate(feed, patients, decisions, cases, baseline, horizon_h, rules=None, followup_cfg=None):
+def patient_loop(loops, patients, horizon_h):
+    """After the clinician's decision: did the patient confirm, act, and did readings improve?
+    Platform alone = one message and no tracking: completed only if the patient reads it and acts
+    on their own (gt_self_completed)."""
+    if loops is None or not len(loops):
+        return {}
+    lp = loops.merge(patients[["patient_id", "remoteness"]], on="patient_id")
+    lp = lp[lp.notified_h <= horizon_h - 7 * 24]  # loops with at least a week to play out
+    if not len(lp):
+        return {}
+    acted = lp.action_done_h.notna()
+    hours = lp.action_done_h - lp.notified_h
+
+    def summ(d):
+        a = d.action_done_h.notna()
+        return {"n": int(len(d)), "heartsafe_action_done": round(float(a.mean()), 3),
+                "platform_alone_action_done": round(float(d.gt_self_completed.fillna(False).astype(bool).mean()), 3),
+                "median_hours_to_action": round(float((d.action_done_h - d.notified_h).median()), 1)
+                if a.any() else None}
+    return {
+        **summ(lp),
+        "confirmed_by": lp.confirmed_by.fillna("not reached").value_counts().to_dict(),
+        "helper_contacts": int(lp.contacts.sum()),
+        "closed_readings_improved": int((lp.state == "closed").sum()),
+        "reopened": int((lp.state == "reopened").sum()),
+        "reopen_reasons": lp[lp.state == "reopened"].outcome.str.split(" \\(").str[0].value_counts().to_dict(),
+        "still_open_at_end": int((~lp.state.isin(["closed", "reopened"])).sum()),
+        "acted_within_48h": round(float((hours <= 48).mean()), 3) if acted.any() else None,
+        "by_remoteness": {k: summ(g) for k, g in lp.groupby("remoteness")},
+    }
+
+
+def evaluate(feed, patients, decisions, cases, baseline, horizon_h, rules=None, followup_cfg=None, loops=None):
     patient_months = len(patients) * (feed.day.max() + 1) / 30.0
     ep_idx = {(r.patient_id, r.day): r.gt_episode for r in feed[["patient_id", "day", "gt_episode"]].itertuples()}
     eps = episodes(feed)
@@ -129,6 +161,7 @@ def evaluate(feed, patients, decisions, cases, baseline, horizon_h, rules=None, 
     stopped = fa.decision.isin(["repeat", "filtered"]).mean() if len(fa) else np.nan
     held = fa.decision.isin(["nurse_verify", "nurse_verify_update"]).mean() if len(fa) else np.nan
     scale_checks = cases[cases.kind == "scale_check"]
+    followups = cases[cases.kind == "patient_followup"]
 
     def share_within(x, h):
         return float(np.mean(np.nan_to_num(x, nan=np.inf) <= h)) if len(x) else np.nan
@@ -164,6 +197,7 @@ def evaluate(feed, patients, decisions, cases, baseline, horizon_h, rules=None, 
         "nurse_queue_per_100_patient_months": {
             "heartsafe_clinical_cases": round(100 * len(clinical) / patient_months, 1),
             "heartsafe_nurse_verifications": round(100 * len(scale_checks) / patient_months, 1),
+            "heartsafe_patient_followups": round(100 * len(followups) / patient_months, 1),
             "platform_alone_alert_items": round(100 * len(baseline) / patient_months, 1),
             "false_alarms_heartsafe": round(100 * false_agent / patient_months, 1),
             "false_alarms_platform_alone": round(100 * false_platform / patient_months, 1)},
@@ -171,6 +205,7 @@ def evaluate(feed, patients, decisions, cases, baseline, horizon_h, rules=None, 
         "resolution": resolution(clinical, baseline, horizon_h, followup_cfg),
         "stalled_cases": stalled(clinical, baseline),
         "model_evidence": model_evidence(decisions),
+        "patient_loop": patient_loop(loops, patients, horizon_h),
         "followup": {
             "cases": int(len(cases)), "reminders_sent": int(cases.reminders.sum()),
             "clinical_cases_ack_within_deadline": round(float(
