@@ -1,7 +1,7 @@
 """HeartSafe agent: sits between the monitoring platform's alerts and the clinical team.
 
-For every platform alert it runs its tools (data-quality check, scale-change memory,
-ECG reliability, MRI reliability), decides accept / repeat measurement / escalate
+For every platform alert it runs its tools (data-quality check, scale-change memory
+with nurse verification, ECG reliability, MRI reliability), decides accept / repeat measurement / escalate
 with a deterministic policy from config.yaml, writes an explainable review, and
 opens or updates a tracked case. Missed readings create outreach tasks. The
 clinical decision always stays with the clinical team.
@@ -13,14 +13,16 @@ import numpy as np
 import pandas as pd
 
 from .clinicians import followup_times
-from .monitoring import rule_levels
+from .monitoring import OPTIONAL, SYMPTOMS, patient_limits, rule_levels
 from .reliability import assess_ecg, assess_mri, assess_reading
 from .review import build_review
 from .signals import ecg_output, mri_output
 
 SEV = {1: "caution", 2: "critical"}
 RANK = {"low": 0, "caution": 1, "critical": 2}
-DATA_FAULTS = {"implausible_weight", "implausible_bp", "implausible_hr", "unit_error", "bp_artifact"}
+DATA_FAULTS = {"implausible_weight", "implausible_bp", "implausible_hr", "implausible_spo2", "unit_error",
+               "bp_artifact"}
+HIST_KEYS = ["day", "weight_kg", "sbp", "hr", "sob", "swelling", *OPTIONAL]
 
 
 class PatientState:
@@ -28,11 +30,12 @@ class PatientState:
         self.hist, self.offset, self.pending_step, self.missed = [], 0.0, None, 0
         self.case_id, self.case_resolved_h = None, None
         self.mri_done = False
+        self.verify = None  # open nurse verification of a possible new scale
 
 
 class HeartSafeAgent:
     def __init__(self, cfg, patients, tracker, rng, horizon_h, ecg_pool=None, mri_pool=None, safeguards=None,
-                 truth=None):
+                 truth=None, scale_truth=None):
         self.cfg, self.tr, self.rng, self.horizon = cfg, tracker, rng, horizon_h
         self.patients = patients.set_index("patient_id", drop=False).to_dict("index")
         self.ecg_pool, self.mri_pool = ecg_pool, mri_pool
@@ -40,6 +43,9 @@ class HeartSafeAgent:
         # Ground truth is used ONLY by the simulated world (what a repeat ECG or MRI would show),
         # never by the agent's decisions.
         self._truth = truth or {}
+        # What the nurse finds when calling about a weight jump (simulation only). None = assume
+        # the new scale is confirmed (real data: the nurse records the answer in the tracker).
+        self._scale_truth = scale_truth
         self.decisions = []
         self.gt_cases = []  # per case: would it have stalled without tracking (evaluation only)
 
@@ -54,7 +60,7 @@ class HeartSafeAgent:
     def _open_case(self, st, now):
         return st.case_id if st.case_id and (st.case_resolved_h is None or st.case_resolved_h > now) else None
 
-    def _create_case(self, patient, st, now, kind, severity, review):
+    def _create_case(self, patient, st, now, kind, severity, review, resolve_note=None):
         ack_h = self._ack_window(patient, severity)
         res_h = self.cfg["followup"]["resolve_deadline_h"][severity]
         review["next_step"] = review["next_step"].replace("{ack}", f"{ack_h:g}")
@@ -67,12 +73,16 @@ class HeartSafeAgent:
                 self.tr.remind(cid, now + t, to)
         who = "nurse_backup" if any(to == "backup" for _, to in f["reminders"]) else "nurse_primary"
         resolved_h = None
+        self.last_ack_h = now + f["ack"]
+        if resolve_note:  # a verification call: resolved as soon as the nurse reaches the patient
+            f["resolve"] = f["ack"] + 1.0
         if now + f["ack"] <= self.horizon:
             self.tr.act(cid, "acknowledge", now + f["ack"], who, "clinician")
             if now + f["ack"] + 0.5 <= self.horizon:
                 self.tr.act(cid, "review", now + f["ack"] + 0.5, who, "clinician")
             if now + f["resolve"] <= self.horizon:
-                self.tr.act(cid, "resolve", now + f["resolve"], who, "clinician", note="Patient contacted; plan documented.")
+                self.tr.act(cid, "resolve", now + f["resolve"], who, "clinician",
+                            note=resolve_note or "Patient contacted; plan documented.")
                 resolved_h = now + f["resolve"]
         if kind == "clinical":
             st.case_id, st.case_resolved_h = cid, resolved_h
@@ -84,20 +94,49 @@ class HeartSafeAgent:
 
     @staticmethod
     def _today(row, offset=0.0):
-        return {"day": row.day, "weight_kg": row.weight_kg - offset, "raw_weight_kg": row.weight_kg,
-                "sbp": row.sbp, "hr": row.hr, "sob": bool(row.sob), "swelling": bool(row.swelling)}
+        t = {"day": row.day, "weight_kg": row.weight_kg - offset, "raw_weight_kg": row.weight_kg,
+             "sbp": row.sbp, "hr": row.hr, "sob": bool(row.sob), "swelling": bool(row.swelling)}
+        for c, default in OPTIONAL.items():
+            v = getattr(row, c, default)
+            t[c] = bool(v) if isinstance(default, bool) else float(v)
+        return t
 
-    def _corrected_level(self, st, today):
+    def _corrected_level(self, st, today, p=None):
         days = np.arange(today["day"] - 14, today["day"] + 1)
-        arr = {k: np.full(len(days), np.nan) for k in ("w", "sbp", "hr")}
-        sym = {k: np.zeros(len(days), bool) for k in ("sob", "swelling")}
+        num = ["weight_kg", "sbp", "hr"] + [c for c, v in OPTIONAL.items() if not isinstance(v, bool)]
+        arr = {k: np.full(len(days), np.nan) for k in num}
+        arr.update({k: np.full(len(days), OPTIONAL.get(k, False)) for k in ("sob", "swelling", *[
+            c for c, v in OPTIONAL.items() if isinstance(v, bool)])})
         for h in st.hist + [today]:
             i = h["day"] - days[0]
             if 0 <= i < len(days):
-                arr["w"][i], arr["sbp"][i], arr["hr"][i] = h["weight_kg"], h["sbp"], h["hr"]
-                sym["sob"][i], sym["swelling"][i] = h["sob"], h["swelling"]
-        lv, fired = rule_levels(arr["w"], arr["sbp"], arr["hr"], sym["sob"], sym["swelling"], self.cfg["alert_rules"])
+                for k in arr:
+                    arr[k][i] = h.get(k, arr[k][i])
+        p = p or {}
+        extra = {k: arr[k] for k in OPTIONAL}
+        lv, fired = rule_levels(arr["weight_kg"], arr["sbp"], arr["hr"], arr["sob"].astype(bool),
+                                arr["swelling"].astype(bool), self.cfg["alert_rules"], extra,
+                                patient_limits(self.cfg["alert_rules"], p), p.get("creatinine_baseline_umol"))
         return int(lv[-1]), fired[-1]
+
+    def _check_verification(self, p, st, row, now):
+        """The nurse has called about a weight jump: re-baseline (new scale) or escalate (real gain)."""
+        v = st.verify
+        if v is None or now < v["due_h"]:
+            return
+        st.verify = None
+        if v["is_scale"]:
+            st.offset += v["step"]
+            for h in st.hist:
+                if h["day"] >= v["step_day"]:
+                    h["weight_kg"] -= v["step"]
+            self._record(row, "scale_verified", case_id=v["case_id"], flags="device_change_confirmed",
+                         notes=f"nurse confirmed a new scale ({v['step']:+.1f} kg); readings re-baselined")
+        else:
+            review = build_review(p, row.day, ["nurse call: the weight gain is real, not a new scale"], st.hist,
+                                  None, "caution", ["scale_check_rejected"], [], ack_h="{ack}")
+            cid, _ = self._create_case(p, st, now, "clinical", "caution", review)
+            self._record(row, "escalate", severity="caution", case_id=cid, flags="scale_check_rejected")
 
     # ---- main loop -----------------------------------------------------
     def run(self, feed):
@@ -106,6 +145,7 @@ class HeartSafeAgent:
             p, st = self.patients[pid], PatientState()
             for row in g.sort_values("day").itertuples():
                 now = row.day * 24 + 9.0
+                self._check_verification(p, st, row, now)
                 if not row.submitted:
                     st.missed += 1
                     if st.missed == r["missing_outreach_days"]:
@@ -118,7 +158,7 @@ class HeartSafeAgent:
                 today = self._today(row, st.offset)
                 if row.alert_level > 0:
                     self._handle_alert(p, st, row, today, now)
-                st.hist.append({k: today[k] for k in ("day", "weight_kg", "sbp", "hr", "sob", "swelling")})
+                st.hist.append({k: today[k] for k in HIST_KEYS})
                 st.hist = st.hist[-14:]
         return pd.DataFrame(self.decisions)
 
@@ -130,28 +170,41 @@ class HeartSafeAgent:
         if DATA_FAULTS & set(flags):
             return self._record(row, "repeat", flags=";".join(flags), notes=" | ".join(notes))
 
-        # 2. scale-change memory: a jump that persists with no symptoms is a new device, not fluid
-        symptoms = today["sob"] or today["swelling"]
-        if st.pending_step is not None:
+        # 2. scale-change memory: a jump that persists with no symptoms may be a new scale. A nurse
+        #    verifies it before the baseline changes; until then weight-only alerts wait in that case.
+        symptoms = any(today.get(s) for s in SYMPTOMS)
+        if st.verify is not None:
+            _, fired_now = self._corrected_level(st, today, p)
+            if not symptoms and all(f.startswith("weight") for f in fired_now):
+                self.tr.add_evidence(st.verify["case_id"], now, {"day": row.day, "rules": fired_now, "flags": flags})
+                return self._record(row, "nurse_verify_update", case_id=st.verify["case_id"],
+                                    flags=";".join(flags) or "awaiting_nurse_verification",
+                                    notes="weight alert held until the nurse verifies the possible new scale")
+            # symptoms or any non-weight rule: real risk does not wait for the verification
+        elif st.pending_step is not None:
             step_day, step, pre = st.pending_step
+            st.pending_step = None
             if abs((today["weight_kg"] - pre) - step) <= r["step_persist_tolerance_kg"]:
-                st.offset += step
-                for h in st.hist:
-                    if h["day"] >= step_day:
-                        h["weight_kg"] -= step
-                today = self._today(row, st.offset)
-                st.pending_step = None
-                notes.append(f"scale change of {step:+.1f} kg confirmed on repeat; readings re-baselined")
-                flags = [f for f in flags if f != "step_change"] + ["device_change_confirmed"]
-            else:
-                st.pending_step = None
+                notes.append(f"weight {step:+.1f} kg since day {step_day} persisted on repeat; "
+                             "nurse to confirm a new scale before re-baselining")
+                review = build_review(p, row.day, ["weight jump persisted on repeat: possible new scale"], st.hist,
+                                      today, "caution", flags + ["scale_check"], notes, kind="scale_check",
+                                      ack_h="{ack}")
+                is_scale = True if self._scale_truth is None else (p["patient_id"], row.day) in self._scale_truth
+                note = ("Nurse called patient: new scale confirmed." if is_scale else
+                        "Nurse called patient: same scale, weight gain is real; escalated.")
+                cid, _ = self._create_case(p, st, now, "scale_check", "caution", review, resolve_note=note)
+                st.verify = {"case_id": cid, "due_h": self.last_ack_h, "step": step, "step_day": step_day,
+                             "is_scale": is_scale}
+                return self._record(row, "nurse_verify", case_id=cid, flags=";".join(flags + ["scale_check"]),
+                                    notes=" | ".join(notes))
         elif "step_change" in flags:
             pre = float(np.median([h["weight_kg"] for h in st.hist[-3:]]))
             st.pending_step = (row.day, today["weight_kg"] - pre, pre)
             return self._record(row, "repeat", flags=";".join(flags), notes=" | ".join(notes))
 
         # 3. does the alert still stand on corrected data?
-        level, fired = self._corrected_level(st, today)
+        level, fired = self._corrected_level(st, today, p)
         if level == 0:
             return self._record(row, "filtered", flags=";".join(flags) or "corrected_data_normal",
                                 notes=" | ".join(notes) or "alert not supported after data-quality correction")

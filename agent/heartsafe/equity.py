@@ -31,7 +31,7 @@ def tables(feed, patients, decisions, cases):
     obs = feed[[c for c in feed.columns if not c.startswith("gt_")]]
     per_p = obs.groupby("patient_id").agg(days=("day", "size"), missed=("submitted", lambda s: (~s).sum()),
                                           alerts=("alert_level", lambda s: (s > 0).sum()))
-    rep = decisions[decisions.decision.isin(["repeat", "filtered"])].groupby("patient_id").size()
+    rep = decisions[decisions.decision.isin(["repeat", "filtered", "nurse_verify", "nurse_verify_update"])].groupby("patient_id").size()
     per_p["missed_rate"] = per_p.missed / per_p.days
     per_p["repeat_rate"] = (rep.reindex(per_p.index).fillna(0) / per_p.alerts.replace(0, np.nan))
     per_p["ecg_unreliable_rate"] = np.nan

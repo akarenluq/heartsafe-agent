@@ -7,11 +7,19 @@ is told not to add any; the template text is always available as the fallback.
 import json
 import os
 
+from .monitoring import SYMPTOM_TEXT, SYMPTOMS
+
 NEXT_STEP = {
-    "critical": "Contact the patient within {ack} hours and assess per the heart-failure program protocol.",
+    "critical": ("Contact the patient within {ack} hours and assess per the heart-failure program protocol. "
+                 "If oxygen saturation, heart rate or blood pressure have changed, consider transfer for "
+                 "assessment and an echocardiogram."),
     "caution": "Contact the patient within {ack} hours; review the trend and symptoms.",
     "low": "Reach the patient within {ack} hours to restore daily readings (device, connectivity or support).",
 }
+SCALE_CHECK_STEP = ("Call the patient within {ack} hours to confirm whether they started using a different "
+                    "scale. Readings are re-baselined only after you confirm it.")
+ENROLLMENT = ("nyha", "days_since_discharge", "caregiver", "beta_blocker", "pacemaker_icd", "atrial_fibrillation",
+              "baseline_sbp")
 
 
 def build_review(patient, day, rules_fired, hist, today, severity, flags, notes, ecg=None, mri=None,
@@ -30,15 +38,16 @@ def build_review(patient, day, rules_fired, hist, today, severity, flags, notes,
     return {
         "kind": kind, "patient_id": patient["patient_id"], "day": day, "severity": severity,
         "context": {k: patient[k] for k in ("remoteness", "sex", "age", "device")},
+        "enrollment": {k: patient[k] for k in ENROLLMENT if k in patient},
         "why_flagged": rules_fired,
-        "symptoms": [s for s in ("sob", "swelling") if today and today.get(s)],
+        "symptoms": [s for s in SYMPTOMS if today and today.get(s)],
         "trend": trend,
         "ecg": None if not ecg else {k: ecg.get(k) for k in ("reliable", "action", "abnormal", "prob", "quality",
                                                              "uncertainty", "reasons")},
         "mri": mri,
         "reliability_flags": flags,
         "caveats": caveats,
-        "next_step": NEXT_STEP[severity].format(ack=ack_h),
+        "next_step": (SCALE_CHECK_STEP if kind == "scale_check" else NEXT_STEP[severity]).format(ack=ack_h),
         "decision_owner": "clinical team",
     }
 
@@ -48,11 +57,18 @@ def render(review):
     lines = [f"**{r['severity'].upper()} - {r['kind']} review for {r['patient_id']} (day {r['day']})**",
              f"Context: {r['context']['age']} y, {r['context']['sex']}, {r['context']['remoteness']} community, "
              f"{r['context']['device'].replace('_', ' ')}."]
+    en = r.get("enrollment") or {}
+    if en:
+        bits = [f"NYHA {en['nyha']}" if en.get("nyha") else None,
+                "beta-blocker" if en.get("beta_blocker") else None,
+                "pacemaker/ICD" if en.get("pacemaker_icd") else None,
+                "atrial fibrillation" if en.get("atrial_fibrillation") else None,
+                "has a caregiver" if en.get("caregiver") else None]
+        lines.append("Enrollment: " + ", ".join(b for b in bits if b) + ".")
     if r["why_flagged"]:
         lines.append("Why flagged: " + "; ".join(r["why_flagged"]) + ".")
     if r["symptoms"]:
-        lines.append("Reported symptoms: " + ", ".join({"sob": "shortness of breath", "swelling": "swelling"}[s]
-                                                       for s in r["symptoms"]) + ".")
+        lines.append("Reported symptoms: " + ", ".join(SYMPTOM_TEXT[s] for s in r["symptoms"]) + ".")
     if r["trend"]:
         w = [t["weight_kg"] for t in r["trend"]]
         lines.append(f"Weight trend (last {len(w)} readings): {w[0]:.1f} -> {w[-1]:.1f} kg; "

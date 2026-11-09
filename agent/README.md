@@ -45,16 +45,43 @@ false alarms and reminders against the last run without safeguards.
 
 Use a real platform export (e.g. from Medly) instead of the simulation:
 `python -m heartsafe.run --feed export.csv --patients-csv patients.csv`
-(columns: patient_id, day, submitted, weight_kg, sbp, hr, sob, swelling; patients:
-patient_id, remoteness, sex, age, age_band, device, ecg_kit).
+(columns: patient_id, day, submitted, weight_kg, sbp, hr, sob, swelling; optional: dbp, spo2,
+orthopnea, pnd, chest_pain, syncope, diuretic_taken, potassium, creatinine_umol; patients:
+patient_id, remoteness, sex, age, age_band, device, ecg_kit; optional: nyha, caregiver,
+creatinine_baseline_umol and the patient's own limits sbp_low, sbp_high, dbp_high, hr_low, hr_high).
+
+## Who is enrolled
+
+Reviewed with cardiologists (Nov 2026), adapted from the Medly post-discharge trial
+(NCT03358303). Settings are under `inclusion` in `config.yaml`; the simulation screens
+candidates and writes the counts to `data/screening.json`.
+
+- Adults hospitalised more than 48 h for decompensated heart failure, discharged in the last 14 days
+- NYHA class II-IV (assessed at the bedside; ejection fraction is not required because it needs an echocardiogram)
+- Able to take readings and answer the symptom questions, alone or with a caregiver
+- Excluded: dementia or uncontrolled psychiatric illness, long-term care, life expectancy under 1 year,
+  transplant list or ventricular assist device, dialysis
+- Target communities are rural and remote; urban patients stay in the simulation as the equity comparison group
+
+## Platform alert rules
+
+Caution: weight +1.5 kg in 2 days or +2.5 kg in 7 days, shortness of breath, swelling, breathless lying
+flat, waking up breathless, diuretic not taken 2 days in a row, oxygen saturation below 93%, potassium
+outside 3.5-5.5 mmol/L, creatinine 26.5 umol/L (0.3 mg/dL) above the enrollment value.
+Critical: weight +3.5 kg in 7 days, systolic BP below 90 or above 180, diastolic BP above 110, heart
+rate below 45 or above 120, oxygen saturation below 90%, chest pain, fainting, potassium outside
+3.0-6.0 mmol/L, or breathlessness together with a weight-gain rule. BP and heart-rate limits are
+defaults; the clinician can set a patient's own limits at enrollment.
 
 ## What the agent does with each platform alert
 
 | Check | Example | Action |
 |---|---|---|
 | Implausible value, weight in lb, BP cuff artifact | 154 kg after 70 kg | ask for a repeat, no case |
-| Overnight weight jump with no symptoms | +2.6 kg, stable HR | ask for a repeat; if it persists, re-baseline (new scale) |
-| Alert no longer stands on corrected data | 7-day gain explained by scale change | filtered, logged |
+| Overnight weight jump with no symptoms | +2.6 kg, stable HR | ask for a repeat; if it persists, a nurse calls to verify a new scale. Weight-only alerts wait in that case; symptoms or any other rule escalate at once |
+| Nurse confirms a new scale | | readings re-baselined |
+| Nurse finds the same scale | | the gain is real: tracked clinical case |
+| Alert no longer stands on corrected data | 7-day gain explained by a verified new scale | filtered, logged |
 | ECG quality or model uncertainty too poor | quality 0.4 | ECG not used as evidence, repeat ECG requested |
 | Reliable abnormal ECG with symptoms | caution alert | raised to critical |
 | Otherwise | | tracked case with an explainable review |

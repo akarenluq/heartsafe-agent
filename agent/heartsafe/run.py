@@ -83,7 +83,7 @@ def main(argv=None):
         patients = pd.read_csv(args.patients_csv)
     else:
         patients, feed = simulate_cohort(cfg, args.patients, args.days, args.seed)
-    feed = platform_levels(PlatformAdapter(feed).feed, cfg["alert_rules"])
+    feed = platform_levels(PlatformAdapter(feed).feed, cfg["alert_rules"], patients)
     horizon = (feed.day.max() + 1) * 24.0
 
     sg_path = out / "safeguards.json"
@@ -100,15 +100,20 @@ def main(argv=None):
         db.unlink()
     tr = Tracker(db)
     truth = {(r.patient_id, r.day): bool(r.gt_episode) for r in feed.itertuples()} if "gt_episode" in feed else {}
+    scale_truth = {(r.patient_id, r.day) for r in feed[feed.gt_fault == "scale_change"].itertuples()} \
+        if "gt_fault" in feed else None
     seed = cfg["cohort"]["seed"] if args.seed is None else args.seed
     agent = HeartSafeAgent(cfg, patients, tr, np.random.default_rng(seed + 1), horizon,
-                           ecg_pool=ecg_pool, mri_pool=mri_pool, safeguards=safeguards, truth=truth)
+                           ecg_pool=ecg_pool, mri_pool=mri_pool, safeguards=safeguards, truth=truth,
+                           scale_truth=scale_truth)
     observable = PlatformAdapter(feed).observable()
     decisions = agent.run(observable)
     tr.commit()
     baseline = run_baseline(observable, patients, cfg, np.random.default_rng(seed + 2), horizon)
     cases = pd.DataFrame(tr.cases()).merge(pd.DataFrame(agent.gt_cases), on="case_id", how="left")
 
+    if patients.attrs.get("screening"):
+        json.dump(patients.attrs["screening"], open(out / "screening.json", "w"), indent=2)
     patients.to_csv(out / "patients.csv", index=False)
     feed.to_csv(out / "feed.csv", index=False)
     decisions.to_csv(out / "decisions.csv", index=False)

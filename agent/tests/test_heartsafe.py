@@ -8,7 +8,7 @@ from heartsafe import load_config
 from heartsafe.agent import HeartSafeAgent, run_baseline
 from heartsafe.equity import audit
 from heartsafe.evaluate import evaluate
-from heartsafe.monitoring import PlatformAdapter, platform_levels, rule_levels
+from heartsafe.monitoring import PlatformAdapter, patient_limits, platform_levels, rule_levels
 from heartsafe.reliability import assess_ecg, assess_reading
 from heartsafe.signals import ecg_quality_index
 from heartsafe.simulate import simulate_cohort
@@ -29,6 +29,38 @@ def test_alert_rules_weight_gain_and_critical():
     lv, _ = rule_levels(np.full(3, 70.0), np.array([120, 85, 120.0]), np.full(3, 70.0), np.zeros(3, bool),
                         np.zeros(3, bool), CFG["alert_rules"])
     assert list(lv) == [0, 2, 0]               # low BP is critical
+
+
+def _levels(n=1, limits=None, creat0=None, **extra):
+    z = np.zeros(n, bool)
+    return rule_levels(np.full(n, 70.0), np.full(n, 120.0), np.full(n, 70.0), z, z, CFG["alert_rules"],
+                       {k: np.asarray(v) for k, v in extra.items()}, limits, creat0)
+
+
+def test_rules_added_after_cardiologist_review():
+    assert _levels(dbp=[115])[0][0] == 2                       # diastolic > 110
+    assert list(_levels(3, spo2=[96, 91, 88])[0]) == [0, 1, 2]  # oxygen saturation
+    assert _levels(chest_pain=[True])[0][0] == 2 and _levels(syncope=[True])[0][0] == 2
+    assert _levels(orthopnea=[True])[0][0] == 1 and _levels(pnd=[True])[0][0] == 1
+    assert list(_levels(3, diuretic_taken=[False, False, True])[0]) == [0, 1, 0]
+    assert list(_levels(3, potassium=[4.2, 5.8, 6.3])[0]) == [0, 1, 2]
+    assert _levels(creatinine_umol=[140], creat0=105)[0][0] == 1
+    # the clinician can set a patient's own limits at enrollment (e.g. low resting heart rate)
+    lim = patient_limits(CFG["alert_rules"], {"hr_low": 40})
+    lv, _ = rule_levels(np.full(1, 70.0), np.full(1, 120.0), np.full(1, 42.0), np.zeros(1, bool), np.zeros(1, bool),
+                        CFG["alert_rules"], limits=lim)
+    assert lv[0] == 0
+
+
+def test_enrollment_follows_inclusion_criteria():
+    patients, _ = simulate_cohort(CFG, n_patients=80, n_days=30, seed=5, demo=False)
+    inc = CFG["inclusion"]
+    assert len(patients) == 80 and (patients.hf_admission_h >= inc["min_hf_admission_h"]).all()
+    assert (patients.days_since_discharge <= inc["max_days_since_discharge"]).all()
+    assert patients.nyha.isin(inc["nyha"]).all() and not patients[inc["exclude"]].any().any()
+    assert (patients.can_self_measure | patients.caregiver).all()
+    s = patients.attrs["screening"]
+    assert s["candidates"] > s["enrolled"] == 80 and s["reasons"]
 
 
 def test_reliability_flags_unit_cuff_and_scale_change():
@@ -73,11 +105,13 @@ def test_tracker_only_clinicians_close_and_audit():
 @pytest.fixture(scope="module")
 def small_run():
     patients, feed = simulate_cohort(CFG, n_patients=150, n_days=60, seed=3)
-    feed = platform_levels(feed, CFG["alert_rules"])
+    feed = platform_levels(feed, CFG["alert_rules"], patients)
     horizon = 60 * 24.0
     tr = Tracker()
     truth = {(r.patient_id, r.day): bool(r.gt_episode) for r in feed.itertuples()}
-    agent = HeartSafeAgent(CFG, patients, tr, np.random.default_rng(1), horizon, truth=truth)
+    scale_truth = {(r.patient_id, r.day) for r in feed[feed.gt_fault == "scale_change"].itertuples()}
+    agent = HeartSafeAgent(CFG, patients, tr, np.random.default_rng(1), horizon, truth=truth,
+                           scale_truth=scale_truth)
     obs = PlatformAdapter(feed).observable()
     assert not any(c.startswith("gt_") for c in obs.columns)
     dec = agent.run(obs)
@@ -87,10 +121,28 @@ def small_run():
 
 def test_demo_patient_story(small_run):
     _, _, dec, _, _, _, _ = small_run
-    mary = dec[dec.patient_id == "DEMO-MARY"].set_index("day").decision
-    assert mary[20] == "repeat" and mary[21] == "filtered"           # scale change caught, not escalated
-    assert any(mary.loc[50:].isin(["escalate", "escalate_update"]))  # real decompensation escalated
+    m = dec[dec.patient_id == "DEMO-MARY"]
+    days = lambda lo, hi: m[(m.day >= lo) & (m.day <= hi)].decision  # noqa: E731
+    assert days(20, 20).tolist() == ["repeat"] and days(21, 21).tolist() == ["nurse_verify"]  # a nurse must verify
+    assert "scale_verified" in days(21, 30).values                   # nurse confirms the new scale
+    assert not days(20, 30).isin(["escalate", "escalate_update"]).any()
+    assert days(24, 30).eq("filtered").any()                         # re-baselined after the nurse's call
+    assert days(50, 90).isin(["escalate", "escalate_update"]).any()  # real decompensation escalated
+    mary = m.decision
     assert "outreach" in mary.values                                 # missed readings followed up
+
+
+def test_scale_change_not_confirmed_is_escalated(small_run):
+    patients, feed, *_ = small_run
+    mary = feed[feed.patient_id == "DEMO-MARY"]
+    tr = Tracker()
+    agent = HeartSafeAgent(CFG, patients[patients.patient_id == "DEMO-MARY"], tr, np.random.default_rng(1),
+                           60 * 24.0, scale_truth=set())          # the nurse finds the same scale
+    dec = agent.run(PlatformAdapter(mary).observable()).set_index("day")
+    assert dec.decision[21] == "nurse_verify" and "scale_verified" not in dec.decision.values
+    esc = dec[dec["flags"].fillna("").str.contains("scale_check_rejected")]
+    assert len(esc) == 1 and esc.decision.iloc[0] == "escalate" and esc.index[0] <= 30
+    assert any(c["kind"] == "scale_check" and c["state"] == "resolved" for c in tr.cases())
 
 
 def test_end_to_end_metrics(small_run):

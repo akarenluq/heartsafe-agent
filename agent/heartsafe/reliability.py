@@ -1,6 +1,8 @@
 """Reliability checks: is a platform alert backed by trustworthy data and model outputs?"""
 import numpy as np
 
+from .monitoring import SYMPTOMS
+
 
 def _median(xs):
     xs = [x for x in xs if x is not None and not np.isnan(x)]
@@ -19,7 +21,7 @@ def assess_reading(hist, today, cfg, offset=0.0):
     flags, notes = [], []
     w = today["weight_kg"] - offset
     sbp, hr = today["sbp"], today["hr"]
-    symptoms = bool(today["sob"] or today["swelling"])
+    symptoms = any(today.get(s) for s in SYMPTOMS)
 
     if not (r["weight_plausible_kg"][0] <= today["weight_kg"] <= r["weight_plausible_kg"][1]):
         flags.append("implausible_weight")
@@ -27,6 +29,11 @@ def assess_reading(hist, today, cfg, offset=0.0):
         flags.append("implausible_bp")
     if not (r["hr_plausible"][0] <= hr <= r["hr_plausible"][1]):
         flags.append("implausible_hr")
+    dbp, spo2 = today.get("dbp", np.nan), today.get("spo2", np.nan)
+    if not np.isnan(dbp) and not (r["dbp_plausible"][0] <= dbp <= r["dbp_plausible"][1]):
+        flags.append("implausible_bp")
+    if not np.isnan(spo2) and not (r["spo2_plausible"][0] <= spo2 <= r["spo2_plausible"][1]):
+        flags.append("implausible_spo2")
 
     recent = [h for h in hist if h["day"] >= today["day"] - 7]
     last3 = [h["weight_kg"] for h in hist[-3:]]
