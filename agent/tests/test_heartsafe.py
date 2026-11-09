@@ -102,6 +102,29 @@ def test_tracker_only_clinicians_close_and_audit():
     assert tr.due_reminders(100) == []
 
 
+def test_patient_loop_only_patient_side_confirms():
+    tr = Tracker()
+    cid = tr.create("P1", "clinical", "caution", 0, 24, 120, {"x": 1})
+    with pytest.raises(ValueError):
+        tr.start_loop(cid, 1, "plan", 12)                       # not resolved yet
+    for a in ("acknowledge", "review"):
+        tr.act(cid, a, 1, "n", "clinician")
+    tr.act(cid, "resolve", 2, "n", "clinician", "extra diuretic for 3 days")
+    tr.start_loop(cid, 2, "plan", 12)
+    with pytest.raises(PermissionDenied):
+        tr.patient_step(cid, "confirm", 3, "heartsafe", "agent")  # the agent cannot confirm for the patient
+    with pytest.raises(ValueError):
+        tr.close_loop(cid, 3, "improved")                         # nothing done yet
+    tr.contact(cid, 14, "caregiver")
+    tr.patient_step(cid, "confirm", 15, "daughter", "caregiver")
+    tr.patient_step(cid, "action_done", 20, "daughter", "caregiver")
+    tr.close_loop(cid, 92, "readings improved after the action")
+    lp = tr.loop(cid)
+    assert lp["state"] == "closed" and lp["confirmed_by"] == "caregiver" and lp["contacts"] == 1
+    assert [a["action"] for a in tr.audit(cid)][-4:] == ["patient_contact", "patient_confirm", "patient_action_done",
+                                                          "loop_closed"]
+
+
 @pytest.fixture(scope="module")
 def small_run():
     patients, feed = simulate_cohort(CFG, n_patients=150, n_days=60, seed=3)
@@ -116,7 +139,12 @@ def small_run():
     assert not any(c.startswith("gt_") for c in obs.columns)
     dec = agent.run(obs)
     base = run_baseline(obs, patients, CFG, np.random.default_rng(2), horizon)
-    return patients, feed, dec, pd.DataFrame(tr.cases()), base, horizon, tr
+    run_ = (patients, feed, dec, pd.DataFrame(tr.cases()), base, horizon, tr)
+    small_run_loops[:] = [pd.DataFrame(tr.loops()).merge(pd.DataFrame(agent.gt_loops), on="case_id")]
+    return run_
+
+
+small_run_loops = []
 
 
 def test_demo_patient_story(small_run):
@@ -130,6 +158,9 @@ def test_demo_patient_story(small_run):
     assert days(50, 90).isin(["escalate", "escalate_update"]).any()  # real decompensation escalated
     mary = m.decision
     assert "outreach" in mary.values                                 # missed readings followed up
+    loops = small_run_loops[0]
+    first = loops[loops.patient_id == "DEMO-MARY"].iloc[0]           # Mary misses the message (remote):
+    assert first.contacts >= 1 and first.confirmed_by in ("caregiver", "community_health_worker")
 
 
 def test_scale_change_not_confirmed_is_escalated(small_run):
@@ -155,6 +186,10 @@ def test_end_to_end_metrics(small_run):
     assert clinical.acknowledged_h.notna().all()
     assert res["followup"]["platform_alone_alert_items_never_acknowledged"] > 0
     json.dumps(res, default=float)
+    res, _ = evaluate(feed, patients, dec, cases, base, horizon, CFG["alert_rules"], loops=small_run_loops[0])
+    pl = res["patient_loop"]
+    assert pl["n"] > 0 and pl["heartsafe_action_done"] > pl["platform_alone_action_done"]
+    assert set(pl["confirmed_by"]) >= {"patient"}
 
 
 class _Block:
@@ -199,5 +234,5 @@ def test_equity_audit_runs(small_run):
     patients, feed, dec, cases, _, _, _ = small_run
     eq, props = audit(feed, patients, dec, cases, CFG)
     assert set(eq.metric) == {"missed_day_rate", "repeat_rate", "ecg_unreliable_rate", "hours_to_ack",
-                              "ack_within_deadline"}
+                              "ack_within_deadline", "patient_action_done"}
     assert all(not p["approved"] for p in props)

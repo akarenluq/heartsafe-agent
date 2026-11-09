@@ -17,7 +17,9 @@ The clinical team makes every decision.
 4. **Explainable review.** Every escalation gets a structured review; an LLM can write the wording,
    with a template fallback.
 5. **Tracked follow-up.** Cases go created → acknowledged → reviewed → resolved, with deadlines, reminders and an
-   audit log. Only a clinician moves or closes a case.
+   audit log. Only a clinician moves or closes a case. Then the **patient loop** follows the clinician's
+   instruction to the patient: confirmed → action done → readings checked, contacting a caregiver or
+   community health worker when the patient does not respond, and reopening when readings do not improve.
 6. **Equity monitor.** Subgroup metrics with bootstrap 95% CIs; gaps become safeguard proposals that an
    administrator approves.
 7. **Evaluation.** HeartSafe against the monitoring platform alone on the simulated cohort, and each model against injected faults

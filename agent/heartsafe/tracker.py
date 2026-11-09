@@ -4,11 +4,20 @@ States: created -> acknowledged -> reviewed -> resolved. Only a clinician can mo
 case forward or close it; the agent can only create cases, add evidence and send
 reminders. Every action is written to an append-only audit log. Times are hours
 since the start of monitoring (the simulation clock, or wall clock in a deployment).
+
+Patient loop: after a clinician resolves a clinical case, the loop follows the
+instruction to the patient: notified -> confirmed -> action_done -> closed (readings
+improved) or reopened (they did not, or the action was not done). Only the patient,
+their caregiver or a community health worker can record a confirmation or an action;
+the agent sends the instruction, contacts helpers, checks the readings afterwards and
+reopens a clinical case when needed. It never closes a clinical case.
 """
 import json
 import sqlite3
 
 STATES = ["created", "acknowledged", "reviewed", "resolved"]
+LOOP_STATES = ["notified", "confirmed", "action_done", "closed", "reopened"]
+PATIENT_SIDE = {"patient", "caregiver", "community_health_worker"}
 CLINICIAN_ACTIONS = {"acknowledge": ("created", "acknowledged"),
                      "review": ("acknowledged", "reviewed"),
                      "resolve": ("reviewed", "resolved")}
@@ -19,6 +28,10 @@ CREATE TABLE IF NOT EXISTS cases (
   created_h REAL, ack_deadline_h REAL, resolve_deadline_h REAL,
   acknowledged_h REAL, reviewed_h REAL, resolved_h REAL,
   reminders INTEGER DEFAULT 0, assigned_to TEXT DEFAULT 'primary', review TEXT, outcome TEXT);
+CREATE TABLE IF NOT EXISTS loops (
+  case_id INTEGER PRIMARY KEY, patient_id TEXT, state TEXT, instruction TEXT,
+  notified_h REAL, confirm_deadline_h REAL, confirmed_h REAL, confirmed_by TEXT,
+  action_done_h REAL, contacts INTEGER DEFAULT 0, outcome TEXT, closed_h REAL, reopened_case_id INTEGER);
 CREATE TABLE IF NOT EXISTS audit (
   event_id INTEGER PRIMARY KEY, case_id INTEGER, t_h REAL, actor TEXT, role TEXT, action TEXT, detail TEXT);
 """
@@ -81,6 +94,55 @@ class Tracker:
         if action == "resolve":
             self.db.execute("UPDATE cases SET outcome=? WHERE case_id=?", (note, case_id))
         self._log(case_id, t, actor, role, action, {"note": note} if note else None)
+
+    # ---- patient loop ------------------------------------------------------
+    def start_loop(self, case_id, t, instruction, confirm_deadline_h):
+        case = self.get(case_id)
+        if case["state"] != "resolved":
+            raise ValueError("the patient loop starts after a clinician resolves the case")
+        self.db.execute("INSERT INTO loops (case_id, patient_id, state, instruction, notified_h, confirm_deadline_h)"
+                        " VALUES (?,?,?,?,?,?)", (case_id, case["patient_id"], "notified", instruction, t,
+                                                  t + confirm_deadline_h))
+        self._log(case_id, t, "heartsafe", "agent", "patient_notified", {"instruction": instruction})
+
+    def contact(self, case_id, t, to):
+        """The agent follows up with the patient, caregiver or community health worker."""
+        self.db.execute("UPDATE loops SET contacts=contacts+1 WHERE case_id=?", (case_id,))
+        self._log(case_id, t, "heartsafe", "agent", "patient_contact", {"to": to})
+
+    def patient_step(self, case_id, step, t, actor, role):
+        """confirm or action_done, recorded by the patient side only."""
+        if role not in PATIENT_SIDE:
+            raise PermissionDenied(f"only the patient, a caregiver or a community health worker can {step}")
+        frm, to, col = {"confirm": ("notified", "confirmed", "confirmed_h"),
+                        "action_done": ("confirmed", "action_done", "action_done_h")}[step]
+        loop = self.loop(case_id)
+        if loop["state"] != frm:
+            raise ValueError(f"loop {case_id} is {loop['state']}, cannot {step}")
+        self.db.execute(f"UPDATE loops SET state=?, {col}=? WHERE case_id=?", (to, t, case_id))
+        if step == "confirm":
+            self.db.execute("UPDATE loops SET confirmed_by=? WHERE case_id=?", (role, case_id))
+        self._log(case_id, t, actor, role, f"patient_{step}")
+
+    def close_loop(self, case_id, t, outcome, reopened_case_id=None):
+        """Agent: readings checked after the action. closed = improved; reopened = new clinical case."""
+        loop = self.loop(case_id)
+        if loop["state"] in ("closed", "reopened"):
+            raise ValueError(f"loop {case_id} is already {loop['state']}")
+        if reopened_case_id is None and loop["state"] != "action_done":
+            raise ValueError("a loop closes only after the patient side records the action")
+        state = "reopened" if reopened_case_id is not None else "closed"
+        self.db.execute("UPDATE loops SET state=?, outcome=?, closed_h=?, reopened_case_id=? WHERE case_id=?",
+                        (state, outcome, t, reopened_case_id, case_id))
+        self._log(case_id, t, "heartsafe", "agent", f"loop_{state}",
+                  {"outcome": outcome, "reopened_case_id": reopened_case_id})
+
+    def loop(self, case_id):
+        r = self.db.execute("SELECT * FROM loops WHERE case_id=?", (case_id,)).fetchone()
+        return dict(r) if r else None
+
+    def loops(self):
+        return [dict(r) for r in self.db.execute("SELECT * FROM loops ORDER BY case_id")]
 
     def due_reminders(self, now):
         """Cases past a deadline that still wait for the next clinician step."""

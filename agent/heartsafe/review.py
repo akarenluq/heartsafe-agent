@@ -16,6 +16,8 @@ NEXT_STEP = {
     "caution": "Contact the patient within {ack} hours; review the trend and symptoms.",
     "low": "Reach the patient within {ack} hours to restore daily readings (device, connectivity or support).",
 }
+FOLLOWUP_STEP = ("Reach the patient, their caregiver or the community health worker within {ack} hours: "
+                 "the care team's instruction was not confirmed or not completed.")
 SCALE_CHECK_STEP = ("Call the patient within {ack} hours to confirm whether they started using a different "
                     "scale. Readings are re-baselined only after you confirm it.")
 ENROLLMENT = ("nyha", "days_since_discharge", "caregiver", "beta_blocker", "pacemaker_icd", "atrial_fibrillation",
@@ -47,7 +49,8 @@ def build_review(patient, day, rules_fired, hist, today, severity, flags, notes,
         "mri": mri,
         "reliability_flags": flags,
         "caveats": caveats,
-        "next_step": (SCALE_CHECK_STEP if kind == "scale_check" else NEXT_STEP[severity]).format(ack=ack_h),
+        "next_step": {"scale_check": SCALE_CHECK_STEP, "patient_followup": FOLLOWUP_STEP}.get(
+            kind, NEXT_STEP[severity]).format(ack=ack_h),
         "decision_owner": "clinical team",
     }
 

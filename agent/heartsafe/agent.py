@@ -3,8 +3,11 @@
 For every platform alert it runs its tools (data-quality check, scale-change memory
 with nurse verification, ECG reliability, MRI reliability), decides accept / repeat measurement / escalate
 with a deterministic policy from config.yaml, writes an explainable review, and
-opens or updates a tracked case. Missed readings create outreach tasks. The
-clinical decision always stays with the clinical team.
+opens or updates a tracked case. Missed readings create outreach tasks. After a
+clinician resolves a clinical case, the patient loop follows the instruction to the
+patient: confirmation, action (with caregiver or community health worker follow-up)
+and a check of the readings afterwards, reopening a case if they did not improve.
+The clinical decision always stays with the clinical team.
 
 `run_baseline` is the comparison: the monitoring platform alone, every alert goes to the nurse
 queue with no reliability check and no follow-up tracking.
@@ -12,7 +15,7 @@ queue with no reliability check and no follow-up tracking.
 import numpy as np
 import pandas as pd
 
-from .clinicians import followup_times
+from .clinicians import followup_times, patient_response
 from .monitoring import OPTIONAL, SYMPTOMS, patient_limits, rule_levels
 from .reliability import assess_ecg, assess_mri, assess_reading
 from .review import build_review
@@ -20,6 +23,8 @@ from .signals import ecg_output, mri_output
 
 SEV = {1: "caution", 2: "critical"}
 RANK = {"low": 0, "caution": 1, "critical": 2}
+INSTRUCTION = {"critical": "Follow the care team's urgent plan (assessment visit or transfer) and confirm when done.",
+               "caution": "Follow the care team's plan (e.g. medication change), confirm, and keep daily readings."}
 DATA_FAULTS = {"implausible_weight", "implausible_bp", "implausible_hr", "implausible_spo2", "unit_error",
                "bp_artifact"}
 HIST_KEYS = ["day", "weight_kg", "sbp", "hr", "sob", "swelling", *OPTIONAL]
@@ -31,6 +36,7 @@ class PatientState:
         self.case_id, self.case_resolved_h = None, None
         self.mri_done = False
         self.verify = None  # open nurse verification of a possible new scale
+        self.loops = []     # patient loops waiting for an outcome check or a failure
 
 
 class HeartSafeAgent:
@@ -48,6 +54,8 @@ class HeartSafeAgent:
         self._scale_truth = scale_truth
         self.decisions = []
         self.gt_cases = []  # per case: would it have stalled without tracking (evaluation only)
+        self.gt_loops = []  # per loop: would the patient have completed it with no follow-up (evaluation only)
+        self._demo_loop_done = False
 
     # ---- helpers -------------------------------------------------------
     def _ack_window(self, patient, severity):
@@ -86,7 +94,81 @@ class HeartSafeAgent:
                 resolved_h = now + f["resolve"]
         if kind == "clinical":
             st.case_id, st.case_resolved_h = cid, resolved_h
+            if resolved_h is not None:
+                self._start_loop(patient, st, cid, severity, resolved_h)
         return cid, resolved_h
+
+    # ---- patient loop --------------------------------------------------
+    def _confirm_window(self, patient, severity):
+        h = self.cfg["patient_loop"]["confirm_deadline_h"][severity]
+        for s in self.safeguards:
+            if s["type"] == "earlier_patient_followup" and str(patient.get(s["field"])) == str(s["value"]):
+                h *= s["factor"]
+        return h
+
+    def _start_loop(self, patient, st, cid, severity, t0):
+        """Send the clinician's instruction and simulate the patient side's response."""
+        if severity not in self.cfg["patient_loop"]["confirm_deadline_h"]:
+            return
+        win = self._confirm_window(patient, severity)
+        self.tr.start_loop(cid, t0, INSTRUCTION[severity], win)
+        demo = patient["patient_id"] == "DEMO-MARY" and not self._demo_loop_done
+        self._demo_loop_done = self._demo_loop_done or demo
+        r = patient_response(severity, patient, win, self.cfg, self.rng, force_no_response=demo)
+        self.gt_loops.append({"case_id": cid, "gt_self_completed": bool(r["gt_self_completed"])})
+        H = self.horizon
+        for dt, to in r["contacts"]:
+            if t0 + dt <= H and (r["confirm"] is None or dt <= r["confirm"] or to == r["by"]):
+                self.tr.contact(cid, t0 + dt, to)
+        if r["confirm"] is not None and t0 + r["confirm"] <= H:
+            self.tr.patient_step(cid, "confirm", t0 + r["confirm"], r["by"], r["by"])
+            if r["action"] is not None and t0 + r["action"] <= H:
+                self.tr.patient_step(cid, "action_done", t0 + r["action"], r["by"], r["by"])
+        loop = {"case_id": cid, "severity": severity, "check_h": None, "fail_h": None, "reason": None}
+        if r["fail"] is not None:
+            loop["fail_h"], loop["reason"] = t0 + r["fail"], r["fail_reason"]
+        elif r["action"] is not None:
+            loop["check_h"] = t0 + r["action"] + self.cfg["patient_loop"]["outcome_check_after_h"]
+        st.loops.append(loop)
+
+    def _reopen(self, p, st, row, now, loop, reason):
+        if loop["fail_h"] is not None:
+            # the instruction did not reach the patient or was not done: a follow-up task for the nurse
+            review = build_review(p, row.day, [f"patient loop: {reason} (case {loop['case_id']})"], st.hist, None,
+                                  loop["severity"], ["patient_loop_reopened"], [], kind="patient_followup",
+                                  ack_h="{ack}")
+            new_id, _ = self._create_case(p, st, now, "patient_followup", loop["severity"], review)
+            self.tr.close_loop(loop["case_id"], now, reason, reopened_case_id=new_id)
+            return self._record(row, "loop_reopened", case_id=new_id, flags="patient_not_reached_or_not_done",
+                                notes=reason)
+        open_id = self._open_case(st, now)
+        if open_id:
+            self.tr.add_evidence(open_id, now, {"loop_of_case": loop["case_id"], "reason": reason})
+            new_id = open_id
+        else:
+            review = build_review(p, row.day, [f"patient loop: {reason}"], st.hist, None, loop["severity"],
+                                  ["patient_loop_reopened"], [], ack_h="{ack}")
+            new_id, _ = self._create_case(p, st, now, "clinical", loop["severity"], review)
+        self.tr.close_loop(loop["case_id"], now, reason, reopened_case_id=new_id)
+        self._record(row, "loop_reopened", case_id=new_id, flags="patient_loop_reopened", notes=reason)
+
+    def _check_loops(self, p, st, row, now, today=None):
+        """Failures fire on time; the outcome check waits for the first reading after it is due."""
+        keep = []
+        for loop in st.loops:
+            if loop["fail_h"] is not None and now >= loop["fail_h"]:
+                self._reopen(p, st, row, now, loop, loop["reason"])
+            elif loop["check_h"] is not None and now >= loop["check_h"] and today is not None:
+                level, fired = self._corrected_level(st, today, p)
+                if level == 0:
+                    self.tr.close_loop(loop["case_id"], now, "readings improved after the action")
+                    self._record(row, "loop_closed", case_id=loop["case_id"])
+                else:
+                    self._reopen(p, st, row, now, loop, "readings did not improve after the action ("
+                                 + "; ".join(fired) + ")")
+            else:
+                keep.append(loop)
+        st.loops = keep
 
     def _record(self, row, decision, **kw):
         self.decisions.append({"patient_id": row.patient_id, "day": row.day, "alert_level": row.alert_level,
@@ -147,6 +229,7 @@ class HeartSafeAgent:
                 now = row.day * 24 + 9.0
                 self._check_verification(p, st, row, now)
                 if not row.submitted:
+                    self._check_loops(p, st, row, now)
                     st.missed += 1
                     if st.missed == r["missing_outreach_days"]:
                         review = build_review(p, row.day, [f"no readings for {st.missed} days"], st.hist, None,
@@ -156,6 +239,7 @@ class HeartSafeAgent:
                     continue
                 st.missed = 0
                 today = self._today(row, st.offset)
+                self._check_loops(p, st, row, now, today)
                 if row.alert_level > 0:
                     self._handle_alert(p, st, row, today, now)
                 st.hist.append({k: today[k] for k in HIST_KEYS})

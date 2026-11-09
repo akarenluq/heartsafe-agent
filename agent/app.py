@@ -91,6 +91,16 @@ def show_case(case):
             (st.success if m["reliable"] else st.warning)(
                 msg + ("" if m["reliable"] else f"  \nFlagged: {', '.join(m.get('reasons') or m['flags'])}")
                 + ("".join(f"  \n{c}" for c in m.get("caveats") or [])))
+    loop = tr.loop(case["case_id"]) if hasattr(tr, "loop") else None
+    if loop:
+        steps = [("Instruction sent", loop["notified_h"]), ("Confirmed" + (f" by {loop['confirmed_by'].replace('_', ' ')}"
+                  if loop["confirmed_by"] else ""), loop["confirmed_h"]), ("Action done", loop["action_done_h"]),
+                 ({"closed": "Readings checked: improved", "reopened": "Reopened"}.get(loop["state"], "Readings check"),
+                  loop["closed_h"])]
+        st.markdown("**Patient loop** (after the clinician's decision)  \n" + "  \n".join(
+            f"{'✓' if t is not None else '·'} {name}" + (f", day {t / 24:.1f}" if t is not None else "")
+            for name, t in steps) + (f"  \nHelper contacts: {loop['contacts']}" if loop["contacts"] else "")
+            + (f"  \nReason: {loop['outcome']}" if loop["state"] == "reopened" else ""))
     st.markdown("**Audit log**")
     log = pd.DataFrame(tr.audit(case["case_id"]))
     log["day"] = (log.t_h / 24).round(2)
@@ -253,6 +263,29 @@ elif page == "Results vs platform alone":
     if rows:
         st.dataframe(pd.DataFrame(rows).astype(str), hide_index=True, width="stretch")
 
+    pl = r.get("patient_loop", {})
+    if pl:
+        st.subheader("Patient loop: did the patient complete the care team's instruction?")
+        c = st.columns(3)
+        c[0].metric("Patient side completed the instruction", f"{pl['heartsafe_action_done']:.0%}",
+                    f"{(pl['heartsafe_action_done'] - pl['platform_alone_action_done']) * 100:+.0f} pts vs one "
+                    "message with no follow-up")
+        c[1].metric("Confirmed by a caregiver or community health worker",
+                    sum(v for k, v in pl["confirmed_by"].items() if k in ("caregiver", "community_health_worker")))
+        c[2].metric("Reopened for the care team", pl["reopened"],
+                    help="; ".join(f"{k}: {v}" for k, v in pl["reopen_reasons"].items()))
+        lb = pd.DataFrame([{"remoteness": k, "arm": arm, "share": v[key]}
+                           for k, v in pl["by_remoteness"].items()
+                           for arm, key in (("HeartSafe", "heartsafe_action_done"),
+                                            ("Platform alone", "platform_alone_action_done"))])
+        st.altair_chart(alt.Chart(lb).mark_bar().encode(
+            x=alt.X("remoteness:N", sort=["urban", "rural", "remote"], title=None, axis=alt.Axis(labelAngle=0)),
+            xOffset="arm:N", y=alt.Y("share:Q", title="Instruction completed", axis=alt.Axis(format="%")),
+            color=alt.Color("arm:N", title=None)).properties(height=240), width="stretch")
+        st.caption("Patient response times and no-response rates are simulation assumptions (config.yaml). "
+                   "The simulation does not model the effect of treatment, so 'readings did not improve' "
+                   "reopens are not a measure of care quality.")
+
     me = r.get("model_evidence", {})
     if me:
         st.subheader(f"Model evidence ({r['sources']['ecg']} for ECG, {r['sources']['mri']} for MRI)")
@@ -343,6 +376,8 @@ else:
    (a nurse verifies it before the baseline changes), is the ECG good enough to trust, are MRI measurements reliable?
    Then it decides: accept, repeat measurement, or escalate.
 3. Escalations become **tracked cases** with an explainable review. Deadlines trigger reminders and backup routing.
+   After the clinician decides, the **patient loop** sends the instruction, waits for the patient to confirm and act,
+   contacts a caregiver or community health worker if they do not, and checks the readings afterwards.
 4. **Only a clinician** acknowledges, reviews and resolves; every action is in the audit log.
 5. The **equity monitor** compares groups (remoteness, sex, age, device) and proposes safeguards that an administrator approves.
 

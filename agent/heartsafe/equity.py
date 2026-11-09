@@ -15,6 +15,8 @@ METRICS = {
     "ecg_unreliable_rate": ("patient", "ecg_unreliable_rate", True, "Share of ECG checks not reliable enough to use"),
     "hours_to_ack": ("case", "hours_to_ack", True, "Hours from case creation to acknowledgement"),
     "ack_within_deadline": ("case", "ack_in_time", False, "Share of cases acknowledged within deadline"),
+    "patient_action_done": ("case", "patient_acted", False,
+                            "Share of resolved cases where the patient side completed the instruction"),
 }
 
 
@@ -45,6 +47,13 @@ def tables(feed, patients, decisions, cases):
     c["hours_to_ack"] = c.acknowledged_h - c.created_h
     c["ack_in_time"] = (c.acknowledged_h <= c.ack_deadline_h).astype(float)
     c.loc[c.acknowledged_h.isna(), "ack_in_time"] = np.nan
+    c["patient_acted"] = np.nan
+    if "loop_state" in c:
+        reason = c.get("loop_reason", pd.Series("", index=c.index)).fillna("")
+        acted = c.loop_state.isin(["action_done", "closed"]) | reason.str.startswith("readings did not improve")
+        failed = reason.isin(["patient could not be reached", "instruction not completed"])
+        c.loc[acted, "patient_acted"] = 1.0
+        c.loc[failed, "patient_acted"] = 0.0
     return per_p.reset_index(), c
 
 
@@ -75,6 +84,13 @@ def audit(feed, patients, decisions, cases, cfg, seed=0):
                               "evidence": f"{r.label}: {r.mean:.2f} (95% CI {r.ci_low:.2f}-{r.ci_high:.2f}, n={r.n})",
                               "effect": "earlier reminders and backup routing for this group; adds reminders",
                               "approved": False})
+        elif r.metric == "patient_action_done":
+            proposals.append({"id": f"earlier_patient_followup:{r.group}={r.value}", "type": "earlier_patient_followup",
+                              "field": r.group, "value": r.value,
+                              "factor": cfg["patient_loop"]["safeguard_factor"],
+                              "evidence": f"{r.label}: {r.mean:.2f} (95% CI {r.ci_low:.2f}-{r.ci_high:.2f}, n={r.n})",
+                              "effect": "contact the caregiver or community health worker earlier for this group; "
+                                        "adds follow-up calls", "approved": False})
         elif r.metric == "ecg_unreliable_rate":
             proposals.append({"id": f"ecg_support:{r.group}={r.value}", "type": "recommendation",
                               "field": r.group, "value": r.value,
