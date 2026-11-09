@@ -21,7 +21,7 @@ SYSTEM = (
 )
 
 TOOLS = [
-    {"name": "get_case_facts", "description": "Patient context, why Medly flagged the day, symptoms and the recent "
+    {"name": "get_case_facts", "description": "Patient context, why the platform flagged the day, symptoms and the recent "
      "weight / blood pressure / heart rate trend.",
      "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"name": "check_data_quality", "description": "Reading-level reliability flags (unit errors, cuff artifacts, "

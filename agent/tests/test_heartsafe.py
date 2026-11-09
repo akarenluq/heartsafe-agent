@@ -8,7 +8,7 @@ from heartsafe import load_config
 from heartsafe.agent import HeartSafeAgent, run_baseline
 from heartsafe.equity import audit
 from heartsafe.evaluate import evaluate
-from heartsafe.medly import MedlyAdapter, medly_levels, rule_levels
+from heartsafe.monitoring import PlatformAdapter, platform_levels, rule_levels
 from heartsafe.reliability import assess_ecg, assess_reading
 from heartsafe.signals import ecg_quality_index
 from heartsafe.simulate import simulate_cohort
@@ -21,13 +21,13 @@ def day(d, w, sbp=120, hr=70, sob=False, swelling=False):
     return {"day": d, "weight_kg": w, "sbp": sbp, "hr": hr, "sob": sob, "swelling": swelling}
 
 
-def test_medly_rules_weight_gain_and_critical():
+def test_alert_rules_weight_gain_and_critical():
     w = np.array([70, 70.1, 70, 71.8, 72.5, 74.2], float)
-    lv, fired = rule_levels(w, np.full(6, 120.0), np.full(6, 70.0), np.zeros(6, bool), np.zeros(6, bool), CFG["medly_rules"])
+    lv, fired = rule_levels(w, np.full(6, 120.0), np.full(6, 70.0), np.zeros(6, bool), np.zeros(6, bool), CFG["alert_rules"])
     assert lv[3] == 1 and "2 days" in fired[3][0]
     assert lv[5] == 2                          # > 3.5 kg in 7 days
     lv, _ = rule_levels(np.full(3, 70.0), np.array([120, 85, 120.0]), np.full(3, 70.0), np.zeros(3, bool),
-                        np.zeros(3, bool), CFG["medly_rules"])
+                        np.zeros(3, bool), CFG["alert_rules"])
     assert list(lv) == [0, 2, 0]               # low BP is critical
 
 
@@ -73,12 +73,12 @@ def test_tracker_only_clinicians_close_and_audit():
 @pytest.fixture(scope="module")
 def small_run():
     patients, feed = simulate_cohort(CFG, n_patients=150, n_days=60, seed=3)
-    feed = medly_levels(feed, CFG["medly_rules"])
+    feed = platform_levels(feed, CFG["alert_rules"])
     horizon = 60 * 24.0
     tr = Tracker()
     truth = {(r.patient_id, r.day): bool(r.gt_episode) for r in feed.itertuples()}
     agent = HeartSafeAgent(CFG, patients, tr, np.random.default_rng(1), horizon, truth=truth)
-    obs = MedlyAdapter(feed).observable()
+    obs = PlatformAdapter(feed).observable()
     assert not any(c.startswith("gt_") for c in obs.columns)
     dec = agent.run(obs)
     base = run_baseline(obs, patients, CFG, np.random.default_rng(2), horizon)
@@ -95,13 +95,13 @@ def test_demo_patient_story(small_run):
 
 def test_end_to_end_metrics(small_run):
     patients, feed, dec, cases, base, horizon, _ = small_run
-    res, er = evaluate(feed, patients, dec, cases, base, horizon, CFG["medly_rules"])
+    res, er = evaluate(feed, patients, dec, cases, base, horizon, CFG["alert_rules"])
     assert res["true_episodes"]["escalated_by_heartsafe"] >= 0.9
     assert res["fault_driven_alerts"]["stopped_by_heartsafe"] >= 0.6
-    # every HeartSafe clinical case created 3+ days before the end is acknowledged; Medly alone loses some alerts
+    # every HeartSafe clinical case created 3+ days before the end is acknowledged; the platform alone loses some alerts
     clinical = cases[(cases.kind == "clinical") & (cases.created_h < horizon - 72)]
     assert clinical.acknowledged_h.notna().all()
-    assert res["followup"]["medly_alone_alert_items_never_acknowledged"] > 0
+    assert res["followup"]["platform_alone_alert_items_never_acknowledged"] > 0
     json.dumps(res, default=float)
 
 

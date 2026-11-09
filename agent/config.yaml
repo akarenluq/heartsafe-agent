@@ -7,8 +7,8 @@ cohort:
   days: 90
   seed: 7
 
-# Simulated Medly-style cohort. Every number here is an ASSUMPTION for the
-# simulation, stated on the slides; none comes from Medly data.
+# Simulated remote-monitoring cohort (modelled on Medly). Every number here is an
+# ASSUMPTION for the simulation, stated on the slides; none comes from platform data.
 simulation:
   remoteness_mix: [0.5, 0.25, 0.25]          # urban, rural, remote
   missing_rate: {urban: 0.05, rural: 0.10, remote: 0.18}   # days with no reading
@@ -27,9 +27,9 @@ simulation:
   mri_fault_share: {urban: 0.05, rural: 0.10, remote: 0.15}       # MRIs drawn from fault-injected exams
   imaging_seen_vendors: [A, B]                                    # M&Ms vendors in nnU-Net training
 
-# Medly-style alert rules. Medly's own clinically validated algorithm is not
+# Platform alert rules (modelled on Medly). Medly's own clinically validated algorithm is not
 # public; these follow common heart-failure telemonitoring thresholds.
-medly_rules:
+alert_rules:
   weight_gain_2d_kg: 1.5
   weight_gain_7d_kg: 2.5
   weight_gain_critical_kg: 3.5

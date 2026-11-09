@@ -1,6 +1,6 @@
 """Structured, explainable review for the clinical team.
 
-The review is built from facts only (Medly readings, reliability checks, model
+The review is built from facts only (platform readings, reliability checks, model
 outputs). An LLM may reword it for readability, but it gets the same facts and
 is told not to add any; the template text is always available as the fallback.
 """

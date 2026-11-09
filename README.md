@@ -1,13 +1,14 @@
 # HeartSafe Agent — WAI Canada Hackathon 2026
 
-Equity-aware trust and coordination layer for remote cardiac monitoring (e.g. Medly, UHN): reliability checks,
+Equity-aware trust and coordination layer on top of existing remote cardiac monitoring platforms
+(main reference: Medly, UHN, used in remote and Indigenous communities; also TELUS Home Health Monitoring, Cloud DX): reliability checks,
 explainable reviews, tracked follow-up and equity monitoring, so existing monitoring is safer and accountable.
 The clinical team makes every decision.
 
 ## How it fits together
 
-1. **Medly-style feed.** Daily weight, blood pressure, heart rate and symptoms, with Medly's own
-   normal / caution / critical alert (simulated cohort, since Medly is not open source).
+1. **Monitoring-platform feed.** Daily weight, blood pressure, heart rate and symptoms, with the platform's own
+   normal / caution / critical alert (simulated cohort modelled on Medly, since these platforms are not open source).
 2. **Model signals.** A single-lead ECG classifier (`ecg/`) and cardiac MRI segmentation (`imaging/`) each write
    one JSON per exam in a shared format:
    `{prediction, probability, uncertainty, quality, shift_score, metadata, flags, suggested_action}`.
@@ -19,14 +20,14 @@ The clinical team makes every decision.
    audit log. Only a clinician moves or closes a case.
 6. **Equity monitor.** Subgroup metrics with bootstrap 95% CIs; gaps become safeguard proposals that an
    administrator approves.
-7. **Evaluation.** HeartSafe against Medly alone on the simulated cohort, and each model against injected faults
+7. **Evaluation.** HeartSafe against the monitoring platform alone on the simulated cohort, and each model against injected faults
    and an unseen device or scanner.
 
 | Folder | What |
 | --- | --- |
 | `imaging/` | Cardiac MRI segmentation (nnU-Net, M&Ms), volumes and EF, imaging reliability, imaging equity audit |
 | `ecg/` | Single-lead ECG classifier (PTB-XL lead I), ECG reliability, PhysioNet 2017 device-shift test |
-| `agent/` | Medly adapter, reliability layer, reviews, case tracker, equity monitor, evaluation, dashboard |
+| `agent/` | Platform adapter, reliability layer, reviews, case tracker, equity monitor, evaluation, dashboard |
 | `plans/` | Execution plan |
 
 Data, results and model weights are never committed (see `.gitignore`).

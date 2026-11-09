@@ -1,4 +1,4 @@
-"""Reliability checks: is a Medly alert backed by trustworthy data and model outputs?"""
+"""Reliability checks: is a platform alert backed by trustworthy data and model outputs?"""
 import numpy as np
 
 

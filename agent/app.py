@@ -43,12 +43,12 @@ now = load("run_info.json")["horizon_h"]
 SEV_ORDER = {"critical": 0, "caution": 1, "low": 2}
 
 st.sidebar.title("HeartSafe")
-st.sidebar.caption("Trust and coordination layer on top of Medly-style remote monitoring")
+st.sidebar.caption("Trust and coordination layer on top of remote monitoring platforms (e.g. Medly)")
 role = st.sidebar.selectbox("Signed in as", ["clinician", "administrator"])
 user = st.sidebar.text_input("Name", "nurse_demo" if role == "clinician" else "admin_demo")
-page = st.sidebar.radio("View", ["Patient journey", "Clinician queue", "Equity audit", "Results vs Medly alone",
+page = st.sidebar.radio("View", ["Patient journey", "Clinician queue", "Equity audit", "Results vs platform alone",
                                  "Model reliability", "How it works"])
-st.sidebar.caption(f"Simulation clock: day {now / 24:.0f}. Medly data here is simulated; Medly is not open source.")
+st.sidebar.caption(f"Simulation clock: day {now / 24:.0f}. Platform data here is simulated (modelled on Medly, which is not open source).")
 
 
 def vitals_chart(pid, upto_day=None, window=None):
@@ -60,7 +60,7 @@ def vitals_chart(pid, upto_day=None, window=None):
                                                      y=alt.Y("weight_kg:Q", title="Weight (kg)", scale=alt.Scale(zero=False)))
     marks = alt.Chart(d.merge(f[["day", "weight_kg"]], on="day")).mark_point(size=160, filled=True).encode(
         x="day:Q", y="weight_kg:Q", color=alt.Color("decision:N", title="HeartSafe action"),
-        tooltip=["day", "decision", "severity", "medly_rules", "flags"])
+        tooltip=["day", "decision", "severity", "alert_rules", "flags"])
     return (base + marks).properties(height=260)
 
 
@@ -117,8 +117,8 @@ if page == "Patient journey":
     st.caption(f"{p.age} y, {p.sex}, {p.remoteness} community, {p.device.replace('_', ' ')}, "
                f"ECG device: {'yes' if p.ecg_kit else 'no'}")
     st.altair_chart(vitals_chart(pid), width="stretch")
-    d = decisions[decisions.patient_id == pid][["day", "medly_rules", "decision", "severity", "flags"]]
-    st.markdown("**Every Medly alert and what HeartSafe did with it**")
+    d = decisions[decisions.patient_id == pid][["day", "alert_rules", "decision", "severity", "flags"]]
+    st.markdown("**Every platform alert and what HeartSafe did with it**")
     st.dataframe(d, hide_index=True, width="stretch")
     cases = pd.DataFrame(tr.cases())
     for _, c in cases[cases.patient_id == pid].iterrows():
@@ -205,24 +205,24 @@ elif page == "Equity audit":
         st.dataframe(pd.DataFrame(effect["targeted_groups"]), hide_index=True, width="stretch")
         st.caption("Before = the last run with no approved safeguards. Same cohort and seed.")
 
-elif page == "Results vs Medly alone":
-    st.header("HeartSafe vs Medly alone (simulated cohort)")
+elif page == "Results vs platform alone":
+    st.header("HeartSafe vs monitoring platform alone (simulated cohort)")
     r = load("evaluation.json")
     te = r["true_episodes"]
     c = st.columns(4)
     c[0].metric("Faulty-reading alerts stopped", f"{r['fault_driven_alerts']['stopped_by_heartsafe']:.0%}",
-                help=f"{r['fault_driven_alerts']['n']} alerts caused by device or entry errors; Medly alone forwards all")
+                help=f"{r['fault_driven_alerts']['n']} alerts caused by device or entry errors; the platform alone forwards all")
     c[1].metric("Mean hours, first alert to acknowledgement",
                 f"{te['mean_hours_first_alert_to_ack']['heartsafe']}",
-                f"{te['mean_hours_first_alert_to_ack']['heartsafe'] - te['mean_hours_first_alert_to_ack']['medly_alone']:+.1f} vs Medly alone",
+                f"{te['mean_hours_first_alert_to_ack']['heartsafe'] - te['mean_hours_first_alert_to_ack']['platform_alone']:+.1f} vs platform alone",
                 delta_color="inverse")
     c[2].metric("True episodes acknowledged within 24 h", f"{te['acknowledged_within_24h']['heartsafe']:.0%}",
-                f"{(te['acknowledged_within_24h']['heartsafe'] - te['acknowledged_within_24h']['medly_alone']) * 100:+.0f} pts")
-    c[3].metric("Alert items never acknowledged (Medly alone)", r["followup"]["medly_alone_alert_items_never_acknowledged"],
+                f"{(te['acknowledged_within_24h']['heartsafe'] - te['acknowledged_within_24h']['platform_alone']) * 100:+.0f} pts")
+    c[3].metric("Alert items never acknowledged (platform alone)", r["followup"]["platform_alone_alert_items_never_acknowledged"],
                 help="With HeartSafe every case is tracked to acknowledgement (reminders, backup routing)")
     by = pd.DataFrame([{"remoteness": k, "arm": arm, "hours": v[f"{key}_mean"]}
                        for k, v in te["hours_to_ack_by_remoteness"].items()
-                       for arm, key in (("HeartSafe", "heartsafe"), ("Medly alone", "medly_alone"))])
+                       for arm, key in (("HeartSafe", "heartsafe"), ("Platform alone", "platform_alone"))])
     st.altair_chart(alt.Chart(by).mark_bar().encode(
         x=alt.X("remoteness:N", sort=["urban", "rural", "remote"], title=None, axis=alt.Axis(labelAngle=0)),
         xOffset="arm:N", y=alt.Y("hours:Q", title="Mean hours to acknowledge"),
@@ -234,13 +234,13 @@ elif page == "Results vs Medly alone":
     if res:
         rows += [{"Measure": "Escalations resolved within deadline",
                   "HeartSafe": f"{res['heartsafe']['resolved_within_deadline']:.0%}",
-                  "Medly alone": f"{res['medly_alone']['resolved_within_deadline']:.0%}"},
+                  "Platform alone": f"{res['platform_alone']['resolved_within_deadline']:.0%}"},
                  {"Measure": "Median hours to resolution", "HeartSafe": res["heartsafe"]["median_hours_to_resolution"],
-                  "Medly alone": res["medly_alone"]["median_hours_to_resolution"]}]
+                  "Platform alone": res["platform_alone"]["median_hours_to_resolution"]}]
     if stl:
         rows.append({"Measure": "Stalled cases found",
                      "HeartSafe": f"{stl['heartsafe']['flagged_by_reminder']} of {stl['heartsafe']['simulated_to_stall']}",
-                     "Medly alone": f"0 of {stl['medly_alone']['simulated_to_stall']}"})
+                     "Platform alone": f"0 of {stl['platform_alone']['simulated_to_stall']}"})
     if rows:
         st.dataframe(pd.DataFrame(rows).astype(str), hide_index=True, width="stretch")
 
@@ -324,12 +324,12 @@ elif page == "Model reliability":
 else:
     st.header("How HeartSafe works")
     st.markdown("""
-1. **Medly** collects daily weight, blood pressure, heart rate and symptoms and raises normal / caution / critical alerts.
+1. **The monitoring platform** (e.g. Medly, used in remote and Indigenous communities) collects daily weight, blood pressure, heart rate and symptoms and raises normal / caution / critical alerts.
 2. **HeartSafe** checks each alert: is the reading plausible, was it a unit or cuff error, did the scale change,
    is the ECG good enough to trust, are MRI measurements reliable? Then it decides: accept, repeat measurement, or escalate.
 3. Escalations become **tracked cases** with an explainable review. Deadlines trigger reminders and backup routing.
 4. **Only a clinician** acknowledges, reviews and resolves; every action is in the audit log.
 5. The **equity monitor** compares groups (remoteness, sex, age, device) and proposes safeguards that an administrator approves.
 
-HeartSafe complements Medly and scheduled follow-up visits; it does not replace them.
+HeartSafe complements the monitoring platform and scheduled follow-up visits; it does not replace them.
 """)

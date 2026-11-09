@@ -1,19 +1,19 @@
-"""HeartSafe agent: sits between Medly alerts and the clinical team.
+"""HeartSafe agent: sits between the monitoring platform's alerts and the clinical team.
 
-For every Medly alert it runs its tools (data-quality check, scale-change memory,
+For every platform alert it runs its tools (data-quality check, scale-change memory,
 ECG reliability, MRI reliability), decides accept / repeat measurement / escalate
 with a deterministic policy from config.yaml, writes an explainable review, and
 opens or updates a tracked case. Missed readings create outreach tasks. The
 clinical decision always stays with the clinical team.
 
-`run_baseline` is the comparison: Medly alone, every alert goes to the nurse
+`run_baseline` is the comparison: the monitoring platform alone, every alert goes to the nurse
 queue with no reliability check and no follow-up tracking.
 """
 import numpy as np
 import pandas as pd
 
 from .clinicians import followup_times
-from .medly import rule_levels
+from .monitoring import rule_levels
 from .reliability import assess_ecg, assess_mri, assess_reading
 from .review import build_review
 from .signals import ecg_output, mri_output
@@ -79,8 +79,8 @@ class HeartSafeAgent:
         return cid, resolved_h
 
     def _record(self, row, decision, **kw):
-        self.decisions.append({"patient_id": row.patient_id, "day": row.day, "medly_level": row.medly_level,
-                               "medly_rules": row.medly_rules, "decision": decision, **kw})
+        self.decisions.append({"patient_id": row.patient_id, "day": row.day, "alert_level": row.alert_level,
+                               "alert_rules": row.alert_rules, "decision": decision, **kw})
 
     @staticmethod
     def _today(row, offset=0.0):
@@ -96,7 +96,7 @@ class HeartSafeAgent:
             if 0 <= i < len(days):
                 arr["w"][i], arr["sbp"][i], arr["hr"][i] = h["weight_kg"], h["sbp"], h["hr"]
                 sym["sob"][i], sym["swelling"][i] = h["sob"], h["swelling"]
-        lv, fired = rule_levels(arr["w"], arr["sbp"], arr["hr"], sym["sob"], sym["swelling"], self.cfg["medly_rules"])
+        lv, fired = rule_levels(arr["w"], arr["sbp"], arr["hr"], sym["sob"], sym["swelling"], self.cfg["alert_rules"])
         return int(lv[-1]), fired[-1]
 
     # ---- main loop -----------------------------------------------------
@@ -116,7 +116,7 @@ class HeartSafeAgent:
                     continue
                 st.missed = 0
                 today = self._today(row, st.offset)
-                if row.medly_level > 0:
+                if row.alert_level > 0:
                     self._handle_alert(p, st, row, today, now)
                 st.hist.append({k: today[k] for k in ("day", "weight_kg", "sbp", "hr", "sob", "swelling")})
                 st.hist = st.hist[-14:]
@@ -196,7 +196,7 @@ class HeartSafeAgent:
                 truth = self._truth.get((p["patient_id"], row.day), False)
                 out, gt = mri_output(p, truth, self.cfg, self.rng, self.mri_pool, demo=demo)
                 mri = assess_mri(out)
-                mri_log = {"patient_id": p["patient_id"], "day": int(t_mri // 24), "medly_level": 0, "medly_rules": "",
+                mri_log = {"patient_id": p["patient_id"], "day": int(t_mri // 24), "alert_level": 0, "alert_rules": "",
                            "flags": ";".join(mri["flags"]), "mri_reliable": mri["reliable"],
                            "mri_scanner": mri["scanner"], "gt_mri_fault": gt["fault"],
                            "gt_mri_unreliable": gt["unreliable"], "gt_mri_regional": gt["regional"]}
@@ -211,16 +211,16 @@ class HeartSafeAgent:
 
 
 def run_baseline(feed, patients, cfg, rng, horizon_h):
-    """Medly alone: each alert episode goes to the nurse queue; no reliability check, no tracking."""
+    """Platform alone: each alert episode goes to the nurse queue; no reliability check, no tracking."""
     pats = patients.set_index("patient_id").to_dict("index")
     rows = []
-    for pid, g in feed[feed.medly_level > 0].groupby("patient_id", sort=False):
+    for pid, g in feed[feed.alert_level > 0].groupby("patient_id", sort=False):
         busy_until = -1.0
         for row in g.sort_values("day").itertuples():
             now = row.day * 24 + 9.0
             if now < busy_until:
                 continue
-            sev = SEV[row.medly_level]
+            sev = SEV[row.alert_level]
             f = followup_times(sev, pats[pid]["remoteness"], cfg["followup"]["ack_deadline_h"][sev],
                                cfg["followup"]["resolve_deadline_h"][sev], cfg, rng, reminders=False)
             ack = now + f["ack"] if f["ack"] is not None else None
