@@ -121,7 +121,11 @@ def evaluate(feed, patients, decisions, cases, baseline, horizon_h, rules=None, 
     # Alerts caused by faulty readings (no true episode): how many did HeartSafe stop?
     fa = fault_driven(feed, rules, patients)[["patient_id", "day"]] if rules else \
         feed[(feed.alert_level > 0) & (feed.gt_fault != "none") & (~feed.gt_episode)][["patient_id", "day"]]
-    fa = fa.merge(decisions[["patient_id", "day", "decision"]], on=["patient_id", "day"], how="left")
+    # one decision per alert day: leave out records that are not a reply to the day's alert
+    # (nurse-confirmed scale, imaging results), which can share a day with it
+    alert_dec = decisions[~decisions.decision.isin(["scale_verified", "imaging_accept", "imaging_review"])]
+    alert_dec = alert_dec.drop_duplicates(["patient_id", "day"], keep="last")
+    fa = fa.merge(alert_dec[["patient_id", "day", "decision"]], on=["patient_id", "day"], how="left")
     stopped = fa.decision.isin(["repeat", "filtered"]).mean() if len(fa) else np.nan
     held = fa.decision.isin(["nurse_verify", "nurse_verify_update"]).mean() if len(fa) else np.nan
     scale_checks = cases[cases.kind == "scale_check"]
