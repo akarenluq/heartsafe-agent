@@ -1,4 +1,4 @@
-"""Assumed clinician response model, used identically for HeartSafe and the Medly-alone baseline.
+"""Assumed clinician response model, used identically for HeartSafe and the platform-alone baseline.
 
 Without tracking, an alert can slip through (forget_prob) and is never acted on.
 With HeartSafe, a missed deadline triggers a reminder, and a second miss goes to a

@@ -11,7 +11,7 @@ import pandas as pd
 # metric: (unit of analysis, column, higher_is_worse, label)
 METRICS = {
     "missed_day_rate": ("patient", "missed_rate", True, "Share of days with no reading"),
-    "repeat_rate": ("patient", "repeat_rate", True, "Share of Medly alerts needing a repeat or correction"),
+    "repeat_rate": ("patient", "repeat_rate", True, "Share of platform alerts needing a repeat or correction"),
     "ecg_unreliable_rate": ("patient", "ecg_unreliable_rate", True, "Share of ECG checks not reliable enough to use"),
     "hours_to_ack": ("case", "hours_to_ack", True, "Hours from case creation to acknowledgement"),
     "ack_within_deadline": ("case", "ack_in_time", False, "Share of cases acknowledged within deadline"),
@@ -30,7 +30,7 @@ def _boot(x, n, rng):
 def tables(feed, patients, decisions, cases):
     obs = feed[[c for c in feed.columns if not c.startswith("gt_")]]
     per_p = obs.groupby("patient_id").agg(days=("day", "size"), missed=("submitted", lambda s: (~s).sum()),
-                                          alerts=("medly_level", lambda s: (s > 0).sum()))
+                                          alerts=("alert_level", lambda s: (s > 0).sum()))
     rep = decisions[decisions.decision.isin(["repeat", "filtered"])].groupby("patient_id").size()
     per_p["missed_rate"] = per_p.missed / per_p.days
     per_p["repeat_rate"] = (rep.reindex(per_p.index).fillna(0) / per_p.alerts.replace(0, np.nan))

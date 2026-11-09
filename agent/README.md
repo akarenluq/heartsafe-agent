@@ -1,24 +1,27 @@
 # HeartSafe coordination layer
 
-HeartSafe is an equity-aware trust and coordination layer on top of a
-remote-monitoring platform such as Medly (UHN). Medly collects daily weight, blood
-pressure, heart rate and symptoms and raises alerts; HeartSafe checks whether each
+HeartSafe is an equity-aware trust and coordination layer on top of an
+existing remote-monitoring platform. Our main reference is Medly (UHN), which is
+used in remote and Indigenous communities; TELUS Home Health Monitoring and Cloud DX
+work the same way. The platform collects daily weight, blood pressure, heart rate
+and symptoms and raises alerts; HeartSafe checks whether each
 alert rests on reliable data, prepares an explainable review, tracks every
 escalation until a clinician resolves it, and monitors equity across communities.
-It complements Medly and scheduled follow-up visits; it does not replace them.
+It complements the platform and scheduled follow-up visits; it does not replace them.
 
 ```
-Medly-style feed -> HeartSafe agent -> clinical team (acknowledge, review, decide) -> tracked follow-up
+Platform feed     -> HeartSafe agent -> clinical team (acknowledge, review, decide) -> tracked follow-up
                     |  reliability checks (readings, ECG, MRI)
                     |  explainable review
                     |  equity monitor -> safeguards approved by an administrator
 ```
 
-**Medly is not open source.** No public code or API was found, so `MedlyAdapter`
-reads a Medly-style CSV and the rules in `medly.py` approximate Medly's
-normal / caution / critical messages. The cohort is simulated
+**These platforms are not open source.** No public code or API was found for Medly,
+so `PlatformAdapter` reads a generic daily CSV and the rules in `monitoring.py`
+approximate a normal / caution / critical alert modelled on Medly's messages. Any
+platform that can export the columns below can be plugged in. The cohort is simulated
 (2,000 patients x 90 days by default); every simulation number is an assumption in
-`config.yaml` and is the same for HeartSafe and the Medly-alone baseline.
+`config.yaml` and is the same for HeartSafe and the platform-alone baseline.
 
 ## Run it
 
@@ -40,12 +43,12 @@ Safeguard loop: an administrator approves a proposal on the Equity audit page an
 "Apply approved safeguards now"; the cohort is re-run and the page shows the extra cases,
 false alarms and reminders against the last run without safeguards.
 
-Use a real Medly-style export instead of the simulation:
+Use a real platform export (e.g. from Medly) instead of the simulation:
 `python -m heartsafe.run --feed export.csv --patients-csv patients.csv`
 (columns: patient_id, day, submitted, weight_kg, sbp, hr, sob, swelling; patients:
 patient_id, remoteness, sex, age, age_band, device, ecg_kit).
 
-## What the agent does with each Medly alert
+## What the agent does with each platform alert
 
 | Check | Example | Action |
 |---|---|---|
@@ -66,17 +69,17 @@ or close a case (`tracker.py`). Every action is in the audit log.
 
 ```
 config.yaml            thresholds, deadlines, simulation assumptions
-heartsafe/simulate.py  Medly-style cohort (+ scripted demo patient DEMO-MARY)
-heartsafe/medly.py     Medly adapter and Medly-style alert rules
+heartsafe/simulate.py  simulated cohort modelled on Medly (+ scripted demo patient DEMO-MARY)
+heartsafe/monitoring.py  platform adapter and alert rules (modelled on Medly)
 heartsafe/reliability.py  reading, ECG and MRI reliability checks
 heartsafe/signals.py   ECG quality index; loaders for ECG / imaging pipeline outputs
 heartsafe/review.py    explainable review (template)
 heartsafe/orchestrator.py  Claude tool-calling review writer with template fallback
 heartsafe/tracker.py   SQLite case tracker with audit log and permissions
 heartsafe/clinicians.py  assumed clinician response model
-heartsafe/agent.py     the agent and the Medly-alone baseline
+heartsafe/agent.py     the agent and the platform-alone baseline
 heartsafe/equity.py    subgroup audit with bootstrap CIs and safeguard proposals
-heartsafe/evaluate.py  HeartSafe vs Medly alone on ground truth
+heartsafe/evaluate.py  HeartSafe vs the platform alone on ground truth
 heartsafe/run.py       command line entry point
 app.py                 Streamlit dashboard
 ```

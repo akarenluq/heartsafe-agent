@@ -1,9 +1,9 @@
-"""Run HeartSafe end to end: Medly-style feed -> agent -> tracker -> evaluation -> equity audit.
+"""Run HeartSafe end to end: monitoring-platform feed -> agent -> tracker -> evaluation -> equity audit.
 
 Usage (from the agent/ folder):
   python -m heartsafe.run                         # simulated cohort from config.yaml
   python -m heartsafe.run --patients 300 --days 60
-  python -m heartsafe.run --feed my_medly_export.csv --patients-csv patients.csv
+  python -m heartsafe.run --feed platform_export.csv --patients-csv patients.csv
   python -m heartsafe.run --imaging ../imaging/results/clean/exams --ecg ../ecg/results/clean/exams
   python -m heartsafe.run --simulated-models     # ignore pipeline outputs even if present
 
@@ -54,7 +54,7 @@ def safeguard_effect(res, eq, out, safeguards):
 from .agent import HeartSafeAgent, run_baseline
 from .equity import audit
 from .evaluate import evaluate
-from .medly import MedlyAdapter, medly_levels
+from .monitoring import PlatformAdapter, platform_levels
 from .signals import load_outputs
 from .simulate import simulate_cohort
 from .tracker import Tracker
@@ -66,7 +66,7 @@ def main(argv=None):
     ap.add_argument("--patients", type=int)
     ap.add_argument("--days", type=int)
     ap.add_argument("--seed", type=int)
-    ap.add_argument("--feed", help="Medly-style CSV export instead of the simulation")
+    ap.add_argument("--feed", help="Monitoring-platform CSV export (e.g. Medly) instead of the simulation")
     ap.add_argument("--patients-csv", help="patient attributes for --feed")
     ap.add_argument("--imaging", help="imaging pipeline exam JSON folder(s), comma-separated")
     ap.add_argument("--ecg", help="ECG pipeline output JSON folder(s), comma-separated")
@@ -83,7 +83,7 @@ def main(argv=None):
         patients = pd.read_csv(args.patients_csv)
     else:
         patients, feed = simulate_cohort(cfg, args.patients, args.days, args.seed)
-    feed = medly_levels(MedlyAdapter(feed).feed, cfg["medly_rules"])
+    feed = platform_levels(PlatformAdapter(feed).feed, cfg["alert_rules"])
     horizon = (feed.day.max() + 1) * 24.0
 
     sg_path = out / "safeguards.json"
@@ -103,7 +103,7 @@ def main(argv=None):
     seed = cfg["cohort"]["seed"] if args.seed is None else args.seed
     agent = HeartSafeAgent(cfg, patients, tr, np.random.default_rng(seed + 1), horizon,
                            ecg_pool=ecg_pool, mri_pool=mri_pool, safeguards=safeguards, truth=truth)
-    observable = MedlyAdapter(feed).observable()
+    observable = PlatformAdapter(feed).observable()
     decisions = agent.run(observable)
     tr.commit()
     baseline = run_baseline(observable, patients, cfg, np.random.default_rng(seed + 2), horizon)
@@ -115,7 +115,7 @@ def main(argv=None):
     baseline.to_csv(out / "baseline.csv", index=False)
 
     if "gt_episode" in feed:
-        res, er = evaluate(feed, patients, decisions, cases, baseline, horizon, cfg["medly_rules"], cfg["followup"])
+        res, er = evaluate(feed, patients, decisions, cases, baseline, horizon, cfg["alert_rules"], cfg["followup"])
         res["safeguards_applied"] = [s["id"] for s in safeguards if s.get("approved")]
         res["sources"] = {"ecg": "pipeline outputs" if ecg_pool else "simulated",
                           "mri": "imaging pipeline outputs" if mri_pool else "simulated"}
@@ -133,7 +133,7 @@ def main(argv=None):
     json.dump(proposals, open(out / "proposals.json", "w"), indent=2)
     json.dump({"horizon_h": horizon}, open(out / "run_info.json", "w"))
 
-    print(f"patients {len(patients)}, patient-days {len(feed)}, Medly alert days {(feed.medly_level > 0).sum()}")
+    print(f"patients {len(patients)}, patient-days {len(feed)}, platform alert days {(feed.alert_level > 0).sum()}")
     print("agent actions:", decisions.decision.value_counts().to_dict())
     print(f"cases {len(cases)} (open at end {(cases.state != 'resolved').sum()}), reminders {cases.reminders.sum()}")
     if "gt_episode" in feed:

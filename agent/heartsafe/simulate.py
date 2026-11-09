@@ -1,7 +1,7 @@
-"""Simulated Medly-style cohort: daily weight, blood pressure, heart rate and symptoms.
+"""Simulated remote-monitoring cohort (modelled on Medly): daily weight, blood pressure, heart rate and symptoms.
 
-Medly data is not public, so this generates a large cohort that follows Medly's
-published inputs. Ground truth (true decompensation episodes, faulty readings)
+Platform data is not public, so this generates a large cohort that follows the
+published inputs of Medly, the main reference platform. Ground truth (true decompensation episodes, faulty readings)
 is kept in columns starting with "gt_" and is used only by the evaluation.
 """
 import numpy as np
