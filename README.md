@@ -7,7 +7,7 @@ The clinical team makes every decision.
 
 ## How it fits together
 
-1. **Monitoring-platform feed.** Daily weight, blood pressure, heart rate and symptoms, with the platform's own
+1. **Monitoring-platform feed.** Daily weight, blood pressure, heart rate, oxygen saturation, symptoms, diuretic taken and post-discharge labs for screened patients (inclusion criteria reviewed with cardiologists), with the platform's own
    normal / caution / critical alert (simulated cohort modelled on Medly, since these platforms are not open source).
 2. **Model signals.** A single-lead ECG classifier (`ecg/`) and cardiac MRI segmentation (`imaging/`) each write
    one JSON per exam in a shared format:

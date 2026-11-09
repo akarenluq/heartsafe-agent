@@ -24,11 +24,12 @@ def _in_episode(feed_idx, pid, day, before=1, after=3):
     return any(feed_idx.get((pid, d), False) for d in range(day - before, day + after + 1))
 
 
-def fault_driven(feed, rules):
+def fault_driven(feed, rules, patients=None):
     """Alert days that would NOT have alerted on the fault-free readings (and no true episode)."""
     clean = feed.drop(columns=["alert_level", "alert_rules"]).copy()
-    clean[["weight_kg", "sbp", "hr"]] = clean[["gt_weight_kg", "gt_sbp", "gt_hr"]].to_numpy()
-    clean = platform_levels(clean, rules)[["patient_id", "day", "alert_level"]].rename(columns={"alert_level": "clean_level"})
+    cols = [c for c in ("weight_kg", "sbp", "hr", "dbp") if f"gt_{c}" in clean]
+    clean[cols] = clean[[f"gt_{c}" for c in cols]].to_numpy()
+    clean = platform_levels(clean, rules, patients)[["patient_id", "day", "alert_level"]].rename(columns={"alert_level": "clean_level"})
     f = feed.merge(clean, on=["patient_id", "day"])
     return f[(f.alert_level > 0) & (f.clean_level == 0) & (~f.gt_episode)]
 
@@ -118,10 +119,12 @@ def evaluate(feed, patients, decisions, cases, baseline, horizon_h, rules=None, 
     false_platform = sum(not _in_episode(ep_idx, r.patient_id, r.day) for r in baseline.itertuples())
 
     # Alerts caused by faulty readings (no true episode): how many did HeartSafe stop?
-    fa = fault_driven(feed, rules)[["patient_id", "day"]] if rules else \
+    fa = fault_driven(feed, rules, patients)[["patient_id", "day"]] if rules else \
         feed[(feed.alert_level > 0) & (feed.gt_fault != "none") & (~feed.gt_episode)][["patient_id", "day"]]
     fa = fa.merge(decisions[["patient_id", "day", "decision"]], on=["patient_id", "day"], how="left")
     stopped = fa.decision.isin(["repeat", "filtered"]).mean() if len(fa) else np.nan
+    held = fa.decision.isin(["nurse_verify", "nurse_verify_update"]).mean() if len(fa) else np.nan
+    scale_checks = cases[cases.kind == "scale_check"]
 
     def share_within(x, h):
         return float(np.mean(np.nan_to_num(x, nan=np.inf) <= h)) if len(x) else np.nan
@@ -148,9 +151,15 @@ def evaluate(feed, patients, decisions, cases, baseline, horizon_h, rules=None, 
                 for k, g in er.groupby("remoteness")},
         },
         "fault_driven_alerts": {"n": int(len(fa)), "stopped_by_heartsafe": round(float(stopped), 3),
+                                "held_for_nurse_verification": round(float(held), 3),
                                 "stopped_by_platform_alone": 0.0},
+        "scale_checks": {"nurse_verifications": int(len(scale_checks)),
+                         "confirmed_new_scale": int((decisions.decision == "scale_verified").sum()),
+                         "real_gain_escalated": int((decisions.get("flags", pd.Series(dtype=str))
+                                                     == "scale_check_rejected").sum())},
         "nurse_queue_per_100_patient_months": {
             "heartsafe_clinical_cases": round(100 * len(clinical) / patient_months, 1),
+            "heartsafe_nurse_verifications": round(100 * len(scale_checks) / patient_months, 1),
             "platform_alone_alert_items": round(100 * len(baseline) / patient_months, 1),
             "false_alarms_heartsafe": round(100 * false_agent / patient_months, 1),
             "false_alarms_platform_alone": round(100 * false_platform / patient_months, 1)},

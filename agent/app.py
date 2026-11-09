@@ -114,8 +114,12 @@ if page == "Patient journey":
     st.header("Patient journey")
     pid = st.selectbox("Patient", ["DEMO-MARY"] + sorted(p for p in decisions.patient_id.unique() if p != "DEMO-MARY"))
     p = patients[patients.patient_id == pid].iloc[0]
+    extra = ""
+    if "nyha" in p:
+        extra = (f" · NYHA {p.nyha}, discharged {p.days_since_discharge} days before enrollment, "
+                 f"caregiver: {'yes' if p.caregiver else 'no'}")
     st.caption(f"{p.age} y, {p.sex}, {p.remoteness} community, {p.device.replace('_', ' ')}, "
-               f"ECG device: {'yes' if p.ecg_kit else 'no'}")
+               f"ECG device: {'yes' if p.ecg_kit else 'no'}{extra}")
     st.altair_chart(vitals_chart(pid), width="stretch")
     d = decisions[decisions.patient_id == pid][["day", "alert_rules", "decision", "severity", "flags"]]
     st.markdown("**Every platform alert and what HeartSafe did with it**")
@@ -209,6 +213,11 @@ elif page == "Results vs platform alone":
     st.header("HeartSafe vs monitoring platform alone (simulated cohort)")
     r = load("evaluation.json")
     te = r["true_episodes"]
+    scr = load("screening.json")
+    if scr:
+        st.caption(f"Enrollment: {scr['enrolled']} of {scr['candidates']} screened candidates met the inclusion "
+                   "criteria. Most common reasons not eligible: "
+                   + "; ".join(f"{k} ({v})" for k, v in list(scr["reasons"].items())[:4]) + ".")
     c = st.columns(4)
     c[0].metric("Faulty-reading alerts stopped", f"{r['fault_driven_alerts']['stopped_by_heartsafe']:.0%}",
                 help=f"{r['fault_driven_alerts']['n']} alerts caused by device or entry errors; the platform alone forwards all")
@@ -324,9 +333,15 @@ elif page == "Model reliability":
 else:
     st.header("How HeartSafe works")
     st.markdown("""
-1. **The monitoring platform** (e.g. Medly, used in remote and Indigenous communities) collects daily weight, blood pressure, heart rate and symptoms and raises normal / caution / critical alerts.
-2. **HeartSafe** checks each alert: is the reading plausible, was it a unit or cuff error, did the scale change,
-   is the ECG good enough to trust, are MRI measurements reliable? Then it decides: accept, repeat measurement, or escalate.
+0. **Who is enrolled:** adults hospitalised more than 48 h for heart failure, discharged in the last 14 days,
+   NYHA II–IV, able to take readings (or with a caregiver). Excluded: dementia, long-term care, palliative care,
+   transplant list or ventricular assist device, dialysis.
+1. **The monitoring platform** (e.g. Medly, used in remote and Indigenous communities) collects daily weight, blood pressure,
+   heart rate, oxygen saturation, symptoms and whether the diuretic was taken, plus post-discharge labs, and raises
+   normal / caution / critical alerts.
+2. **HeartSafe** checks each alert: is the reading plausible, was it a unit or cuff error, did the scale change
+   (a nurse verifies it before the baseline changes), is the ECG good enough to trust, are MRI measurements reliable?
+   Then it decides: accept, repeat measurement, or escalate.
 3. Escalations become **tracked cases** with an explainable review. Deadlines trigger reminders and backup routing.
 4. **Only a clinician** acknowledges, reviews and resolves; every action is in the audit log.
 5. The **equity monitor** compares groups (remoteness, sex, age, device) and proposes safeguards that an administrator approves.

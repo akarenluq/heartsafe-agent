@@ -17,7 +17,25 @@ simulation:
   unit_error_rate: 0.003                     # weight typed in lb instead of kg
   cuff_error_rate: 0.005                     # badly placed BP cuff
   symptom_base_rate: 0.008                   # daily chance of a symptom report without decompensation
+  orthopnea_base_rate: 0.004                 # breathless lying flat, without decompensation
+  pnd_base_rate: 0.0024                      # woke up breathless at night, without decompensation
+  chest_pain_base_rate: 0.0005               # daily chance of chest pain without decompensation
+  syncope_base_rate: 0.0003
+  diuretic_miss_rate: 0.03                   # daily chance the diuretic is not taken
+  diuretic_miss_before_episode: 0.25         # extra in the 5 days before a decompensation
+  lab_days_after_discharge: [7, 30, 60]      # potassium and creatinine drawn at the clinic
+  episode_early_scale_days: 30               # decompensation risk is highest soon after discharge
   episode_prob: 0.18                         # heart-failure decompensation in the period
+  patient:                                   # enrollment record of screened candidates
+    nyha_mix: [0.05, 0.45, 0.38, 0.12]       # NYHA I, II, III, IV at discharge
+    median_admission_h: 110
+    max_days_since_discharge_seen: 21
+    caregiver_share: 0.5
+    can_self_measure_share: 0.9
+    beta_blocker_share: 0.8
+    pacemaker_share: 0.25
+    af_share: 0.35
+    exclusion_rates: {dementia: 0.06, long_term_care: 0.05, palliative: 0.05, transplant_or_lvad: 0.02, dialysis: 0.04}
   ecg_kit_share: 0.7                         # patients with a single-lead ECG device
   ecg_quality_beta: {urban: [9, 2], rural: [8, 2], remote: [5, 3]}
   mri_referral_prob: 0.3                     # resolved critical cases sent for cardiac MRI
@@ -27,23 +45,48 @@ simulation:
   mri_fault_share: {urban: 0.05, rural: 0.10, remote: 0.15}       # MRIs drawn from fault-injected exams
   imaging_seen_vendors: [A, B]                                    # M&Ms vendors in nnU-Net training
 
+# Who is enrolled. Reviewed with cardiologists (Nov 2026): NYHA class is used because it is
+# assessed at the bedside; ejection fraction is not required (it needs an echocardiogram).
+# Target: rural and remote patients; urban patients stay in the simulation as the
+# comparison group for the equity audit.
+inclusion:
+  min_age: 18
+  min_hf_admission_h: 48             # hospitalised for decompensated heart failure
+  max_days_since_discharge: 14
+  nyha: [II, III, IV]
+  remoteness: [urban, rural, remote]
+  exclude: [dementia, long_term_care, palliative, transplant_or_lvad, dialysis]
+
 # Platform alert rules (modelled on Medly). Medly's own clinically validated algorithm is not
-# public; these follow common heart-failure telemonitoring thresholds.
+# public; these follow common heart-failure telemonitoring thresholds and were reviewed with
+# cardiologists (Nov 2026). BP / heart-rate limits are defaults: the clinician can set
+# sbp_low, sbp_high, dbp_high, hr_low, hr_high per patient at enrollment (patients table).
 alert_rules:
   weight_gain_2d_kg: 1.5
   weight_gain_7d_kg: 2.5
   weight_gain_critical_kg: 3.5
   sbp_low: 90
   sbp_high: 180
+  dbp_high: 110                      # critical
   hr_low: 45
   hr_high: 120
+  spo2_caution: 93                   # below -> caution
+  spo2_critical: 90                  # below -> critical
+  missed_diuretic_days: 2            # consecutive days -> caution
+  potassium_caution: [3.5, 5.5]      # mmol/L, outside -> caution
+  potassium_critical: [3.0, 6.0]     # outside -> critical
+  creatinine_rise_umol: 26.5         # above the enrollment value (= 0.3 mg/dL) -> caution
+  # chest pain or fainting -> critical; breathless lying flat or at night -> caution
+  # (critical together with a weight-gain rule, like shortness of breath)
 
 reliability:
   weight_plausible_kg: [30, 250]
   sbp_plausible: [60, 250]
+  dbp_plausible: [30, 150]
+  spo2_plausible: [70, 100]
   hr_plausible: [25, 220]
   unit_error_ratio: [1.9, 2.5]       # today / recent median, weight entered in lb
-  step_change_kg: 1.8                # one-day jump that suggests a new scale
+  step_change_kg: 1.8                # one-day jump that suggests a new scale (a nurse verifies it)
   step_persist_tolerance_kg: 1.0
   cuff_jump_mmhg: 30
   hr_stable_bpm: 10
