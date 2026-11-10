@@ -27,6 +27,9 @@ DEFAULT_POOLS = {
 }
 
 
+SAFEGUARD_METRIC = {"tighter_ack_deadline": "hours_to_ack", "earlier_patient_followup": "patient_action_done"}
+
+
 def safeguard_effect(res, eq, out, safeguards):
     """Before/after an approved safeguard: workload added and the targeted group's response."""
     approved = [s for s in safeguards if s.get("approved")]
@@ -47,9 +50,10 @@ def safeguard_effect(res, eq, out, safeguards):
         "extra_clinical_cases_per_100_pm": round(q1["heartsafe_clinical_cases"] - q0["heartsafe_clinical_cases"], 1),
         "extra_false_alarms_per_100_pm": round(q1["false_alarms_heartsafe"] - q0["false_alarms_heartsafe"], 1),
         "extra_reminders": res["followup"]["reminders_sent"] - before["followup"]["reminders_sent"],
-        "targeted_groups": [{"safeguard": s["id"],
-                             "hours_to_ack_before": grp(before_eq, s, "hours_to_ack"),
-                             "hours_to_ack_after": grp(eq, s, "hours_to_ack")} for s in approved],
+        "targeted_groups": [{"safeguard": s["id"], "metric": SAFEGUARD_METRIC.get(s["type"], "hours_to_ack"),
+                             "before": grp(before_eq, s, SAFEGUARD_METRIC.get(s["type"], "hours_to_ack")),
+                             "after": grp(eq, s, SAFEGUARD_METRIC.get(s["type"], "hours_to_ack"))}
+                            for s in approved],
     }
 from .agent import HeartSafeAgent, run_baseline
 from .equity import audit

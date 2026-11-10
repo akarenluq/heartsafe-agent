@@ -12,6 +12,8 @@ The clinical decision always stays with the clinical team.
 `run_baseline` is the comparison: the monitoring platform alone, every alert goes to the nurse
 queue with no reliability check and no follow-up tracking.
 """
+import re
+
 import numpy as np
 import pandas as pd
 
@@ -28,6 +30,11 @@ INSTRUCTION = {"critical": "Follow the care team's urgent plan (assessment visit
 DATA_FAULTS = {"implausible_weight", "implausible_bp", "implausible_hr", "implausible_spo2", "unit_error",
                "bp_artifact"}
 HIST_KEYS = ["day", "weight_kg", "sbp", "hr", "sob", "swelling", *OPTIONAL]
+
+
+def rule_key(text):
+    """The rule behind an alert reason, without its numbers: 'weight +2.6 kg in 2 days' -> 'weight # kg in # days'."""
+    return re.sub(r"[+-]?\d+(\.\d+)?", "#", text)
 
 
 class PatientState:
@@ -68,14 +75,16 @@ class HeartSafeAgent:
     def _open_case(self, st, now):
         return st.case_id if st.case_id and (st.case_resolved_h is None or st.case_resolved_h > now) else None
 
-    def _create_case(self, patient, st, now, kind, severity, review, resolve_note=None):
+    def _create_case(self, patient, st, now, kind, severity, review, resolve_note=None, trigger=None):
+        """trigger: (rule level, rules fired) that started a clinical case, for its patient loop."""
         ack_h = self._ack_window(patient, severity)
         res_h = self.cfg["followup"]["resolve_deadline_h"][severity]
         review["next_step"] = review["next_step"].replace("{ack}", f"{ack_h:g}")
         cid = self.tr.create(patient["patient_id"], kind, severity, now, ack_h, res_h, review)
         f = followup_times(severity, patient["remoteness"], ack_h, res_h, self.cfg, self.rng, reminders=True,
                            force_forget=patient["patient_id"] == "DEMO-MARY" and kind == "clinical")
-        self.gt_cases.append({"case_id": cid, "gt_stalled": bool(f.get("forgot"))})
+        self.gt_cases.append({"case_id": cid, "gt_stalled": bool(f.get("forgot")),
+                              "standard_ack_deadline_h": now + self.cfg["followup"]["ack_deadline_h"][severity]})
         for t, to in f["reminders"]:
             if now + t <= self.horizon:
                 self.tr.remind(cid, now + t, to)
@@ -95,7 +104,7 @@ class HeartSafeAgent:
         if kind == "clinical":
             st.case_id, st.case_resolved_h = cid, resolved_h
             if resolved_h is not None:
-                self._start_loop(patient, st, cid, severity, resolved_h)
+                self._start_loop(patient, st, cid, severity, resolved_h, trigger)
         return cid, resolved_h
 
     # ---- patient loop --------------------------------------------------
@@ -106,7 +115,7 @@ class HeartSafeAgent:
                 h *= s["factor"]
         return h
 
-    def _start_loop(self, patient, st, cid, severity, t0):
+    def _start_loop(self, patient, st, cid, severity, t0, trigger=None):
         """Send the clinician's instruction and simulate the patient side's response."""
         if severity not in self.cfg["patient_loop"]["confirm_deadline_h"]:
             return
@@ -124,14 +133,30 @@ class HeartSafeAgent:
             self.tr.patient_step(cid, "confirm", t0 + r["confirm"], r["by"], r["by"])
             if r["action"] is not None and t0 + r["action"] <= H:
                 self.tr.patient_step(cid, "action_done", t0 + r["action"], r["by"], r["by"])
-        loop = {"case_id": cid, "severity": severity, "check_h": None, "fail_h": None, "reason": None}
+        loop = {"case_id": cid, "severity": severity, "check_h": None, "fail_h": None, "reason": None,
+                "level": trigger[0] if trigger else None,
+                "rules": {rule_key(f) for f in trigger[1]} if trigger else None}
         if r["fail"] is not None:
             loop["fail_h"], loop["reason"] = t0 + r["fail"], r["fail_reason"]
         elif r["action"] is not None:
             loop["check_h"] = t0 + r["action"] + self.cfg["patient_loop"]["outcome_check_after_h"]
         st.loops.append(loop)
 
-    def _reopen(self, p, st, row, now, loop, reason):
+    @staticmethod
+    def _worse(loop, level, fired):
+        """Worse than when the case started: a higher alert level, or a critical alert for a new reason."""
+        if loop.get("rules") is None:
+            return level > 0
+        return level > loop["level"] or (level == 2 and bool({rule_key(f) for f in fired} - loop["rules"]))
+
+    @classmethod
+    def _not_improved(cls, loop, level, fired):
+        """The outcome check: a rule that started the case still fires, or the readings got worse."""
+        if loop.get("rules") is None:
+            return level > 0
+        return bool({rule_key(f) for f in fired} & loop["rules"]) or cls._worse(loop, level, fired)
+
+    def _reopen(self, p, st, row, now, loop, reason, trigger=None):
         if loop["fail_h"] is not None:
             # the instruction did not reach the patient or was not done: a follow-up task for the nurse
             review = build_review(p, row.day, [f"patient loop: {reason} (case {loop['case_id']})"], st.hist, None,
@@ -148,7 +173,7 @@ class HeartSafeAgent:
         else:
             review = build_review(p, row.day, [f"patient loop: {reason}"], st.hist, None, loop["severity"],
                                   ["patient_loop_reopened"], [], ack_h="{ack}")
-            new_id, _ = self._create_case(p, st, now, "clinical", loop["severity"], review)
+            new_id, _ = self._create_case(p, st, now, "clinical", loop["severity"], review, trigger=trigger)
         self.tr.close_loop(loop["case_id"], now, reason, reopened_case_id=new_id)
         self._record(row, "loop_reopened", case_id=new_id, flags="patient_loop_reopened", notes=reason)
 
@@ -160,12 +185,14 @@ class HeartSafeAgent:
                 self._reopen(p, st, row, now, loop, loop["reason"])
             elif loop["check_h"] is not None and now >= loop["check_h"] and today is not None:
                 level, fired = self._corrected_level(st, today, p)
-                if level == 0:
+                if not self._not_improved(loop, level, fired):
                     self.tr.close_loop(loop["case_id"], now, "readings improved after the action")
                     self._record(row, "loop_closed", case_id=loop["case_id"])
                 else:
-                    self._reopen(p, st, row, now, loop, "readings did not improve after the action ("
-                                 + "; ".join(fired) + ")")
+                    why = "readings got worse" if self._worse(loop, level, fired) else \
+                        "readings did not improve"
+                    self._reopen(p, st, row, now, loop, f"{why} after the action (" + "; ".join(fired) + ")",
+                                 trigger=(level, fired))
             else:
                 keep.append(loop)
         st.loops = keep
@@ -217,7 +244,8 @@ class HeartSafeAgent:
         else:
             review = build_review(p, row.day, ["nurse call: the weight gain is real, not a new scale"], st.hist,
                                   None, "caution", ["scale_check_rejected"], [], ack_h="{ack}")
-            cid, _ = self._create_case(p, st, now, "clinical", "caution", review)
+            cid, _ = self._create_case(p, st, now, "clinical", "caution", review,
+                                       trigger=(1, ["weight +0 kg in 7 days"]))  # a weight-gain case
             self._record(row, "escalate", severity="caution", case_id=cid, flags="scale_check_rejected")
 
     # ---- main loop -----------------------------------------------------
@@ -313,14 +341,31 @@ class HeartSafeAgent:
         open_id = self._open_case(st, now)
         if open_id:
             self.tr.add_evidence(open_id, now, {"day": row.day, "rules": fired, "flags": flags})
+            for loop in st.loops:  # the outcome check also covers rules added while the case was open
+                if loop["case_id"] == open_id and loop["rules"] is not None:
+                    loop["rules"] |= {rule_key(f) for f in fired}
+                    loop["level"] = max(loop["level"], level)
             case = self.tr.get(open_id)
             if RANK[severity] > RANK[case["severity"]] and case["state"] == "created":
                 self.tr.escalate_severity(open_id, now, severity, now + self._ack_window(p, severity))
+                for g in self.gt_cases:
+                    if g["case_id"] == open_id:
+                        g["standard_ack_deadline_h"] = now + self.cfg["followup"]["ack_deadline_h"][severity]
             return self._record(row, "escalate_update", severity=severity, case_id=open_id, flags=";".join(flags),
                                 **ecg_log)
 
+        # 5b. the care team's plan is being followed: an alert that is not worse waits for the outcome check
+        for loop in st.loops:
+            if loop["check_h"] is not None and now < loop["check_h"] and not self._worse(loop, level, fired) \
+                    and RANK[severity] <= RANK[loop["severity"]]:
+                self.tr.add_evidence(loop["case_id"], now, {"day": row.day, "rules": fired, "flags": flags,
+                                                            "during_patient_loop": True})
+                return self._record(row, "loop_update", severity=severity, case_id=loop["case_id"],
+                                    flags=";".join(flags), notes="not worse than when the case started; "
+                                    "the outcome check after the action decides", **ecg_log)
+
         review = build_review(p, row.day, fired, st.hist, today, severity, flags, notes, ecg=ecg, ack_h="{ack}")
-        cid, resolved_h = self._create_case(p, st, now, "clinical", severity, review)
+        cid, resolved_h = self._create_case(p, st, now, "clinical", severity, review, trigger=(level, fired))
         self._record(row, "escalate", severity=severity, case_id=cid, flags=";".join(flags), **ecg_log)
 
         # 6. imaging follow-up for some critical cases: MRI results get their own reliability check

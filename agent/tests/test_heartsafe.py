@@ -5,14 +5,16 @@ import pandas as pd
 import pytest
 
 from heartsafe import load_config
-from heartsafe.agent import HeartSafeAgent, run_baseline
+from heartsafe.agent import HeartSafeAgent, rule_key, run_baseline
 from heartsafe.equity import audit
 from heartsafe.evaluate import evaluate
 from heartsafe.monitoring import PlatformAdapter, patient_limits, platform_levels, rule_levels
 from heartsafe.reliability import assess_ecg, assess_reading
+from heartsafe.review import render, summarize_ecg, summarize_mri
 from heartsafe.signals import ecg_quality_index
 from heartsafe.simulate import simulate_cohort
 from heartsafe.tracker import PermissionDenied, Tracker
+from heartsafe.watch import Watcher, followup_status
 
 CFG = load_config()
 
@@ -61,6 +63,22 @@ def test_enrollment_follows_inclusion_criteria():
     assert (patients.can_self_measure | patients.caregiver).all()
     s = patients.attrs["screening"]
     assert s["candidates"] > s["enrolled"] == 80 and s["reasons"]
+    # a patient whose usual BP is near a default limit gets a personal limit at enrollment
+    low = patients[patients.baseline_sbp < CFG["alert_rules"]["sbp_low"] + 15]
+    assert len(low) and (low.sbp_low < CFG["alert_rules"]["sbp_low"]).all()
+
+
+def test_loop_reopens_only_if_the_starting_problem_remains():
+    loop = {"level": 1, "rules": {rule_key("weight +2.6 kg in 7 days"), rule_key("swelling")}}
+    nope = HeartSafeAgent._not_improved
+    assert nope(loop, 1, ["weight +2.8 kg in 7 days"])       # the same rule still fires (other number)
+    assert not nope(loop, 0, [])                               # readings normal
+    assert not nope(loop, 1, ["diuretic not taken for 2 days"])  # a different caution: a new alert, not a reopening
+    assert nope(loop, 2, ["systolic BP 84"])                   # worse: a higher alert level
+    assert HeartSafeAgent._worse(loop, 2, ["systolic BP 84"])
+    crit = {"level": 2, "rules": {rule_key("systolic BP 85")}}
+    assert not nope(crit, 1, ["swelling"]) and nope(crit, 2, ["chest pain"])  # new critical reason = worse
+    assert nope({"level": None, "rules": None}, 1, ["swelling"])  # no record of the trigger: any alert counts
 
 
 def test_reliability_flags_unit_cuff_and_scale_change():
@@ -100,6 +118,40 @@ def test_tracker_only_clinicians_close_and_audit():
     assert tr.get(cid)["state"] == "resolved"
     assert [a["action"] for a in tr.audit(cid)] == ["create", "acknowledge", "review", "resolve"]
     assert tr.due_reminders(100) == []
+
+
+def test_followup_watch_finds_overdue_cases_and_unconfirmed_loops():
+    tr = Tracker()
+    late = tr.create("P1", "clinical", "critical", 0, 4, 48, {"x": 1})       # never acknowledged
+    done = tr.create("P2", "clinical", "caution", 0, 24, 120, {"x": 1})
+    for a in ("acknowledge", "review"):
+        tr.act(done, a, 1, "n", "clinician")
+    tr.act(done, "resolve", 2, "n", "clinician", "extra diuretic")
+    tr.start_loop(done, 2, "plan", 12)                                       # confirmation due at 14 h
+    w = Watcher(tr, CFG)
+    assert w.tick(3) == [] and w.tick(4) is None                             # not due again until 2 h later
+    found = {s["case_id"]: s for s in w.tick(20, act=True)}
+    assert found[late]["issues"] == ["ack_overdue"] and found[done]["issues"] == ["patient_not_confirmed"]
+    acts = [a["action"] for a in tr.audit()]
+    assert "reminder" in acts and "patient_contact" in acts                  # reminds and contacts a helper ...
+    assert tr.get(late)["state"] == "created" and tr.loop(done)["state"] == "notified"  # ... never acts for them
+    assert any("caregiver" in line for line in followup_status(tr.get(done), tr, 21)["lines"])
+
+
+def test_ecg_and_mri_summaries_without_llm():
+    ecg = {"reliable": False, "action": "repeat", "abnormal": True, "prob": 0.91, "quality": 0.3,
+           "uncertainty": 0.2, "reasons": ["noisy signal"]}
+    s = summarize_ecg(ecg)
+    assert "poor" in s and "Not used as evidence (noisy signal)" in s and "repeat ECG" in s
+    mri = {"reliable": True, "lvef": 38.0, "scanner": "GE", "uncertainty": 0.04, "flags": [], "caveats": []}
+    assert "38% (reduced)" in summarize_mri(mri) and "GE scanner" in summarize_mri(mri)
+    assert "(preserved)" in summarize_mri({**mri, "lvef": 60.0})
+    review = {"kind": "clinical", "patient_id": "P1", "day": 3, "severity": "caution",
+              "context": {"age": 70, "sex": "F", "remoteness": "remote", "device": "own_scale"},
+              "why_flagged": ["swelling"], "symptoms": [], "trend": [], "ecg": ecg, "mri": mri,
+              "caveats": ["ECG not used as evidence (noisy signal); repeat ECG requested"], "next_step": "Call."}
+    text = render(review, ["Waiting for acknowledgement; deadline in 3.0 h."])
+    assert "Follow-up status: Waiting" in text and "Reliability caveats" not in text  # no duplicate ECG caveat
 
 
 def test_patient_loop_only_patient_side_confirms():
@@ -161,6 +213,17 @@ def test_demo_patient_story(small_run):
     loops = small_run_loops[0]
     first = loops[loops.patient_id == "DEMO-MARY"].iloc[0]           # Mary misses the message (remote):
     assert first.contacts >= 1 and first.confirmed_by in ("caregiver", "community_health_worker")
+    # one plan, followed, and her readings recover: alerts during the plan wait for the outcome check
+    assert len(loops[loops.patient_id == "DEMO-MARY"]) == 1 and first.outcome == "readings improved after the action"
+    assert "loop_update" in days(51, 55).values and "loop_reopened" not in mary.values
+
+
+def test_reopenings_follow_real_episodes(small_run):
+    _, feed, dec, *_ = small_run
+    gt = feed.set_index(["patient_id", "day"]).gt_episode
+    ro = dec[(dec.decision == "loop_reopened") & dec.notes.fillna("").str.contains("after the action")]
+    outside = [not gt.get((r.patient_id, r.day), False) for r in ro.itertuples()]
+    assert len(ro) and np.mean(outside) < 0.25
 
 
 def test_scale_change_not_confirmed_is_escalated(small_run):

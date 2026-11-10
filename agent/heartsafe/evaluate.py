@@ -209,7 +209,9 @@ def evaluate(feed, patients, decisions, cases, baseline, horizon_h, rules=None, 
         "followup": {
             "cases": int(len(cases)), "reminders_sent": int(cases.reminders.sum()),
             "clinical_cases_ack_within_deadline": round(float(
-                (clinical.acknowledged_h <= clinical.ack_deadline_h).mean()), 3) if len(clinical) else None,
+                (clinical.acknowledged_h <= (clinical.standard_ack_deadline_h.fillna(clinical.ack_deadline_h)
+                                             if "standard_ack_deadline_h" in clinical else clinical.ack_deadline_h)
+                 ).mean()), 3) if len(clinical) else None,
             "platform_alone_alert_items_never_acknowledged": int(baseline.lost.sum()),
             "open_at_end": int((cases.state != "resolved").sum())},
     }

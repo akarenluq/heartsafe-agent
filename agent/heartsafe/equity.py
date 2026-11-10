@@ -45,12 +45,15 @@ def tables(feed, patients, decisions, cases):
     per_p = per_p.join(patients.set_index("patient_id"))
     c = cases[cases.kind == "clinical"].merge(patients, on="patient_id")
     c["hours_to_ack"] = c.acknowledged_h - c.created_h
-    c["ack_in_time"] = (c.acknowledged_h <= c.ack_deadline_h).astype(float)
+    # scored against the standard deadline, so a safeguard's tighter deadline does not look like a drop
+    deadline = c.standard_ack_deadline_h.fillna(c.ack_deadline_h) if "standard_ack_deadline_h" in c \
+        else c.ack_deadline_h
+    c["ack_in_time"] = (c.acknowledged_h <= deadline).astype(float)
     c.loc[c.acknowledged_h.isna(), "ack_in_time"] = np.nan
     c["patient_acted"] = np.nan
     if "loop_state" in c:
         reason = c.get("loop_reason", pd.Series("", index=c.index)).fillna("")
-        acted = c.loop_state.isin(["action_done", "closed"]) | reason.str.startswith("readings did not improve")
+        acted = c.loop_state.isin(["action_done", "closed"]) | reason.str.startswith(("readings did not improve", "readings got worse"))
         failed = reason.isin(["patient could not be reached", "instruction not completed"])
         c.loc[acted, "patient_acted"] = 1.0
         c.loc[failed, "patient_acted"] = 0.0

@@ -36,6 +36,9 @@ simulation:
     pacemaker_share: 0.25
     af_share: 0.35
     exclusion_rates: {dementia: 0.06, long_term_care: 0.05, palliative: 0.05, transplant_or_lvad: 0.02, dialysis: 0.04}
+    # At enrollment the clinician sets personal BP / heart-rate limits when the patient's usual value
+    # is within this margin of a default limit (limit = usual value -/+ margin).
+    personal_limit_margin: {sbp: 20, hr: 15}
   ecg_kit_share: 0.7                         # patients with a single-lead ECG device
   ecg_quality_beta: {urban: [9, 2], rural: [8, 2], remote: [5, 3]}
   mri_referral_prob: 0.3                     # resolved critical cases sent for cardiac MRI
@@ -53,7 +56,11 @@ inclusion:
   min_age: 18
   min_hf_admission_h: 48             # hospitalised for decompensated heart failure
   max_days_since_discharge: 14
-  nyha: [II, III, IV]
+  nyha: [II, III, IV] 
+  # Class I (No Limitation): People have heart disease, but ordinary physical activity does not cause undue fatigue, palpitations, or shortness of breath.
+  # Class II (Slight Limitation): People are comfortable at rest, but ordinary physical activity results in fatigue, heart palpitations, or shortness of breath.
+  # Class III (Marked Limitation): People are comfortable at rest, but less-than-ordinary physical activity (such as walking short distances or light daily chores) causes noticeable symptoms.
+  # Class IV (Severe Limitation): People are unable to carry on any physical activity without discomfort, and heart failure symptoms are present even while at rest.
   remoteness: [urban, rural, remote]
   exclude: [dementia, long_term_care, palliative, transplant_or_lvad, dialysis]
 
@@ -99,6 +106,7 @@ reliability:
 followup:
   ack_deadline_h: {critical: 4, caution: 24, low: 72}
   resolve_deadline_h: {critical: 48, caution: 120, low: 168}
+  watch_every_h: 2                   # follow-up watch: how often every case and patient loop is checked
 
 # Patient loop: after a clinician resolves a clinical case, HeartSafe sends the instruction,
 # waits for the patient to confirm and act, contacts a caregiver or community health worker
@@ -136,5 +144,9 @@ equity:
   n_boot: 1000
   tighter_deadline_factor: 0.5
 
+# Reviews are written from templates (no LLM needed). The Claude-written review is future
+# work: off by default; set llm_enabled: true and ANTHROPIC_API_KEY to try it in the dashboard.
 review:
-  llm_model: claude-sonnet-5-5   # used only when ANTHROPIC_API_KEY is set and asked for
+  llm_enabled: false
+  llm_model: claude-sonnet-5-5
+  lvef_bands: {reduced_max: 40, mildly_reduced_max: 49}   # % (universal definition of heart failure)

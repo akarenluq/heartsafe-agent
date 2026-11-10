@@ -11,8 +11,9 @@ from pathlib import Path
 
 from heartsafe import DATA, load_config
 from heartsafe.orchestrator import orchestrate
-from heartsafe.review import render
+from heartsafe.review import patient_evidence, render
 from heartsafe.tracker import PermissionDenied, Tracker
+from heartsafe.watch import Watcher, followup_status
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -68,10 +69,11 @@ def show_case(case):
     review = json.loads(case["review"])
     c1, c2 = st.columns([3, 2])
     with c1:
-        st.markdown(render(review))
-        if st.button("Explain with AI agent", key=f"llm{case['case_id']}",
-                     help="Claude calls read-only tools over this case and writes the review. "
-                          "The decision and deadlines stay with the policy and the clinical team."):
+        st.markdown(render(review, followup_status(case, tr, now)["lines"], cfg["review"].get("lvef_bands")))
+        if cfg["review"].get("llm_enabled") and st.button(
+                "Explain with AI agent", key=f"llm{case['case_id']}",
+                help="Optional: Claude calls read-only tools over this case and rewords the review. "
+                     "The decision and deadlines stay with the policy and the clinical team."):
             with st.spinner("Agent gathering facts..."):
                 out = orchestrate(case, tr, cfg["review"]["llm_model"], now_h=now)
             st.info(out["text"])
@@ -131,6 +133,11 @@ if page == "Patient journey":
     st.caption(f"{p.age} y, {p.sex}, {p.remoteness} community, {p.device.replace('_', ' ')}, "
                f"ECG device: {'yes' if p.ecg_kit else 'no'}{extra}")
     st.altair_chart(vitals_chart(pid), width="stretch")
+    pcases = [c for c in tr.cases() if c["patient_id"] == pid]
+    evidence = patient_evidence(decisions[decisions.patient_id == pid], [json.loads(c["review"]) for c in pcases],
+                                cfg["review"].get("lvef_bands"))
+    if evidence:
+        st.markdown("**ECG and MRI reports**  \n" + "  \n".join(evidence))
     d = decisions[decisions.patient_id == pid][["day", "alert_rules", "decision", "severity", "flags"]]
     st.markdown("**Every platform alert and what HeartSafe did with it**")
     st.dataframe(d, hide_index=True, width="stretch")
@@ -153,6 +160,23 @@ elif page == "Clinician queue":
     m3.metric("Critical", int((open_.severity == "critical").sum()))
     st.dataframe(open_[["case_id", "patient_id", "kind", "severity", "state", "created_day", "overdue",
                         "reminders", "assigned_to"]], hide_index=True, width="stretch")
+
+    every_h = cfg["followup"]["watch_every_h"]
+
+    @st.fragment(run_every=every_h * 3600)
+    def followup_watch():
+        """Re-checks every case and patient loop every watch_every_h hours (report only; nurses act)."""
+        found = Watcher(tr, cfg).tick(now)
+        st.markdown(f"**Follow-up watch** (runs every {every_h:g} h; last check at simulation day {now / 24:.1f})")
+        if not found:
+            st.success("Nothing is overdue.")
+        else:
+            st.warning(f"{len(found)} case(s) need a follow-up action.")
+            st.dataframe(pd.DataFrame([{"case_id": s["case_id"], "patient_id": s["patient_id"], "kind": s["kind"],
+                                        "severity": s["severity"], "issue": ", ".join(s["issues"]),
+                                        "status": " ".join(s["lines"])} for s in found]),
+                         hide_index=True, width="stretch")
+    followup_watch()
     if len(open_):
         cid = st.selectbox("Open a case", open_.case_id.tolist())
         show_case(tr.get(int(cid)))
