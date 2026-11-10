@@ -1,4 +1,7 @@
-"""LLM tool-calling orchestrator for case reviews.
+"""LLM tool-calling orchestrator for case reviews (optional future work; off by default).
+
+The template review (review.py + watch.py) already covers the facts, the ECG / MRI
+summaries and the follow-up status, so this is not needed to run HeartSafe.
 
 Claude gets read-only tools over one case (the facts, data quality, ECG, MRI,
 follow-up status) and writes the review by calling `submit_review`. It explains;
@@ -11,6 +14,7 @@ import json
 import os
 
 from .review import render
+from .watch import followup_status
 
 SYSTEM = (
     "You prepare case reviews for heart-failure remote-monitoring nurses. "
@@ -51,12 +55,13 @@ TOOLS = [
 ]
 
 
-def _tool_results(case, tracker):
+def _tool_results(case, tracker, now_h=None):
     review = json.loads(case["review"]) if isinstance(case["review"], str) else case["review"]
     audit = tracker.audit(case["case_id"]) if tracker else []
+    status = followup_status(case, tracker, now_h)["lines"] if tracker and now_h is not None else None
     return review, {
-        "get_case_facts": {k: review.get(k) for k in ("kind", "patient_id", "day", "context", "why_flagged",
-                                                      "symptoms", "trend")},
+        "get_case_facts": {k: review.get(k) for k in ("kind", "patient_id", "day", "context", "enrollment",
+                                                      "why_flagged", "symptoms", "trend")},
         "check_data_quality": {"reliability_flags": review.get("reliability_flags"), "caveats": review.get("caveats")},
         "check_ecg": review.get("ecg") or {"note": "no ECG for this case"},
         "check_mri": review.get("mri") or {"note": "no MRI for this case"},
@@ -64,7 +69,8 @@ def _tool_results(case, tracker):
                            "ack_deadline_h": case.get("ack_deadline_h"),
                            "resolve_deadline_h": case.get("resolve_deadline_h"),
                            "reminders": case.get("reminders"), "assigned_to": case.get("assigned_to"),
-                           "audit": [{k: a[k] for k in ("t_h", "actor", "action")} for a in audit][-12:]},
+                           "audit": [{k: a[k] for k in ("t_h", "actor", "action")} for a in audit][-12:],
+                           **({"status": status} if status else {})},
     }
 
 
@@ -81,8 +87,9 @@ def _format(out, review):
 
 def orchestrate(case, tracker, model, client=None, now_h=None, max_turns=8):
     """Returns {"text", "source", "tool_calls"}; logs the run to the audit trail."""
-    review, results = _tool_results(case, tracker)
-    fallback = {"text": render(review), "source": "template", "tool_calls": []}
+    review, results = _tool_results(case, tracker, now_h)
+    fallback = {"text": render(review, results["check_followup"].get("status")), "source": "template",
+                "tool_calls": []}
 
     def log(detail):
         if tracker is not None:

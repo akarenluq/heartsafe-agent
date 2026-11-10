@@ -1,0 +1,216 @@
+<section class="module" id="module-5" style="background: var(--color-bg-warm)">
+  <div class="module-content">
+    <header class="module-header animate-in">
+      <span class="module-number">05</span>
+      <h1 class="module-title">The outside world</h1>
+      <p class="module-subtitle">The services HeartSafe depends on, and why the demo keeps working when one of them is missing.</p>
+    </header>
+
+    <div class="module-body">
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Everything that is not our code</h2>
+        <p>A useful habit: list every outside service a project touches, and ask "what happens if it is slow, costs money, or disappears?" For HeartSafe:</p>
+
+        <div class="icon-rows">
+          <div class="icon-row"><div class="icon-circle" style="background: var(--color-actor-2)">🖥️</div><div><strong>SDRE cluster (University of Alberta)</strong><p>Powerful GPU machines where the ECG and MRI models are trained. Used once, offline. Not needed for the demo.</p></div></div>
+          <div class="icon-row"><div class="icon-circle" style="background: var(--color-actor-3)">📚</div><div><strong>Public datasets</strong><p>PTB-XL (hospital ECGs), PhysioNet/CinC 2017 (home AliveCor ECGs), M&amp;Ms (MRI from four scanner makes). De-identified; never committed to git.</p></div></div>
+          <div class="icon-row"><div class="icon-circle" style="background: var(--color-actor-1)">✨</div><div><strong>Claude API</strong><p>Writes the wording of a case review on request. Optional: without a key, a template writes it.</p></div></div>
+          <div class="icon-row"><div class="icon-circle" style="background: var(--color-actor-5)">🗄️</div><div><strong>SQLite + Streamlit</strong><p>A database that is just a file, and a Python library that turns a script into a web dashboard. Both run on the laptop.</p></div></div>
+        </div>
+      </section>
+
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Training far away, using results locally</h2>
+        <p>Training happens on a shared cluster run by
+          <span class="term" data-definition="A job scheduler for shared computers. You describe what your job needs (CPUs, memory, GPU, time), submit it, and Slurm runs it when the resources are free.">Slurm</span>. Each job starts with a list of what it needs, and asking for far more than it uses lowers your team's priority next time.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line"><span class="code-comment">#!/bin/bash</span></span><span class="code-line"><span class="code-comment">#SBATCH --job-name=hs_ecg_train</span></span><span class="code-line"><span class="code-comment">#SBATCH --cpus-per-task=8</span></span><span class="code-line"><span class="code-comment">#SBATCH --mem=16G</span></span><span class="code-line"><span class="code-comment">#SBATCH --time=00:45:00</span></span><span class="code-line"><span class="code-comment">#SBATCH --gpus-per-node=1</span></span><span class="code-line"><span class="code-comment">#SBATCH --output=%x_%j.out</span></span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">This is a <span class="term" data-definition="The text-based command language used in terminals on Linux and Mac. Scripts written in it run commands one after another.">bash</span> script.</p>
+              <p class="tl">Call the job "hs_ecg_train" in the queue.</p>
+              <p class="tl">Reserve 8 CPU cores…</p>
+              <p class="tl">…16 GB of memory…</p>
+              <p class="tl">…and at most 45 minutes (set to about 2–3 times what earlier runs actually took).</p>
+              <p class="tl">One GPU for the five networks.</p>
+              <p class="tl">Write the job's printed output to a file named after the job and its number.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="flow-animation" data-steps='[
+          {"highlight":"flow-m5-1","label":"Training jobs run on SDRE GPUs (the MRI model took 63 minutes on an H200)"},
+          {"highlight":"flow-m5-2","label":"Each job writes one JSON result per ECG or MRI exam, in the shared format","packet":true,"from":"m5-1","to":"m5-2"},
+          {"highlight":"flow-m5-3","label":"fetch_results.sh copies the results (not the raw data, not the model weights) to the PC","packet":true,"from":"m5-2","to":"m5-3"},
+          {"highlight":"flow-m5-4","label":"run.py loads 4,396 ECG and 340 MRI results and hands them to simulated patients","packet":true,"from":"m5-3","to":"m5-4"},
+          {"highlight":"flow-m5-5","label":"The dashboard reads the outputs in data/ and needs no cluster, no GPU, no internet","packet":true,"from":"m5-4","to":"m5-5"}
+        ]'>
+          <div class="flow-actors">
+            <div class="flow-actor" id="flow-m5-1"><div class="flow-actor-icon">🖥️</div><span>SDRE GPUs</span></div>
+            <div class="flow-actor" id="flow-m5-2"><div class="flow-actor-icon">🧾</div><span>Result JSONs</span></div>
+            <div class="flow-actor" id="flow-m5-3"><div class="flow-actor-icon">💻</div><span>Laptop</span></div>
+            <div class="flow-actor" id="flow-m5-4"><div class="flow-actor-icon">▶️</div><span>run.py</span></div>
+            <div class="flow-actor" id="flow-m5-5"><div class="flow-actor-icon">📊</div><span>Dashboard</span></div>
+          </div>
+          <div class="flow-packet"></div>
+          <div class="flow-step-label">Click "Next Step" to begin</div>
+          <div class="flow-controls">
+            <button class="btn flow-next-btn">Next Step</button>
+            <button class="btn flow-reset-btn">Restart</button>
+            <span class="flow-progress"></span>
+          </div>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">💡</div>
+          <div class="callout-content">
+            <strong class="callout-title">Cache the expensive part</strong>
+            <p>The models never run live during the demo: their saved results do. Separating "slow, expensive, done once" from "fast, done every time" is one of the most useful design moves you can ask an AI tool for.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Claude as a careful assistant</h2>
+        <p>When a nurse clicks "Explain with AI agent", <code>orchestrator.py</code> gives Claude a case and a set of read-only
+          <span class="term" data-definition="Functions a language model is allowed to ask your program to run. The model says 'call check_ecg', your code runs it and sends back the result. The model never runs anything itself.">tools</span>. Claude gathers the facts, then hands in the review through a tool with a fixed shape.</p>
+
+        <div class="chat-window" id="chat-module5">
+          <div class="chat-messages">
+            <div class="chat-message" data-msg="0" data-sender="orc" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-2)">O</div>
+              <div class="chat-bubble"><span class="chat-sender" style="color: var(--color-actor-2)">Orchestrator</span><p>Prepare the review for case 412. Use only what the tools return. Never phrase anything as a decision.</p></div>
+            </div>
+            <div class="chat-message" data-msg="1" data-sender="claude" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-1)">C</div>
+              <div class="chat-bubble"><span class="chat-sender" style="color: var(--color-actor-1)">Claude</span><p>Calling <code>get_case_facts</code>, <code>check_data_quality</code> and <code>check_ecg</code>.</p></div>
+            </div>
+            <div class="chat-message" data-msg="2" data-sender="orc" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-2)">O</div>
+              <div class="chat-bubble"><span class="chat-sender" style="color: var(--color-actor-2)">Orchestrator</span><p>Facts: weight +3.0 kg in 7 days, swelling. ECG: not reliable (noisy signal), repeat requested.</p></div>
+            </div>
+            <div class="chat-message" data-msg="3" data-sender="claude" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-1)">C</div>
+              <div class="chat-bubble"><span class="chat-sender" style="color: var(--color-actor-1)">Claude</span><p>Calling <code>submit_review</code>: summary, why flagged, caveats ("ECG not used: noisy signal"), evidence used, next step reworded.</p></div>
+            </div>
+            <div class="chat-message" data-msg="4" data-sender="orc" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-2)">O</div>
+              <div class="chat-bubble"><span class="chat-sender" style="color: var(--color-actor-2)">Orchestrator</span><p>Received. Severity and deadlines stay as the rules set them. Logged in the audit trail.</p></div>
+            </div>
+          </div>
+          <div class="chat-typing" style="display:none">
+            <div class="chat-avatar" id="chat-module5-typing-avatar">?</div>
+            <div class="chat-typing-dots"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>
+          </div>
+          <div class="chat-controls">
+            <button class="btn chat-next-btn">Next Message</button>
+            <button class="btn chat-all-btn">Play All</button>
+            <button class="btn chat-reset-btn">Replay</button>
+            <span class="chat-progress"></span>
+          </div>
+        </div>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line">        <span class="code-keyword">for</span> _ <span class="code-keyword">in</span> <span class="code-function">range</span>(max_turns):</span><span class="code-line">            resp = client.beta.messages.<span class="code-function">create</span>(</span><span class="code-line">                model=model, max_tokens=<span class="code-number">4000</span>, system=SYSTEM, tools=TOOLS, messages=messages,</span><span class="code-line">                output_config={<span class="code-string">"effort"</span>: <span class="code-string">"medium"</span>},</span><span class="code-line">                <span class="code-comment"># On a safety decline the API re-runs the request on a fallback model.</span></span><span class="code-line">                betas=[<span class="code-string">"server-side-fallback-2026-07-01"</span>], fallbacks=<span class="code-string">"default"</span>)</span><span class="code-line">            <span class="code-keyword">if</span> resp.stop_reason == <span class="code-string">"refusal"</span>:</span><span class="code-line">                <span class="code-keyword">raise</span> <span class="code-function">RuntimeError</span>(<span class="code-string">"model declined"</span>)</span><span class="code-line">            uses = [b <span class="code-keyword">for</span> b <span class="code-keyword">in</span> resp.content <span class="code-keyword">if</span> b.type == <span class="code-string">"tool_use"</span>]</span><span class="code-line">            <span class="code-keyword">if</span> <span class="code-keyword">not</span> uses:</span><span class="code-line">                <span class="code-keyword">raise</span> <span class="code-function">RuntimeError</span>(<span class="code-string">f"stopped ({resp.stop_reason}) without submit_review"</span>)</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Allow at most 8 rounds of back-and-forth, so it can never loop forever.</p>
+              <p class="tl">Send the conversation so far to Claude, through the <span class="term" data-definition="Application Programming Interface: a way for one program to send requests to another over the internet, e.g. 'here is a conversation, reply to it'.">API</span>…</p>
+              <p class="tl">…with the instructions, the tools, and medium thinking effort.</p>
+              <p class="tl">(A note on the next line.)</p>
+              <p class="tl">If Claude declines for safety reasons, the service retries on a fallback model.</p>
+              <p class="tl">If it still declined…</p>
+              <p class="tl">…treat that as a failure.</p>
+              <p class="tl">Collect the tools Claude asked to use this round.</p>
+              <p class="tl">If it asked for none…</p>
+              <p class="tl">…it stopped without handing in a review: also a failure.</p>
+              <p class="tl">Otherwise keep its reply in the conversation and run the tools it asked for.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Always have a plan B</h2>
+        <p>The whole loop is wrapped so that <em>any</em> problem (no internet, no key, a refusal, a malformed answer) gives the nurse the same review written by the template. The flow of care never depends on the language model. (So far this loop has been tested with a stand-in client, not yet against the live API.)</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line">    <span class="code-keyword">except</span> Exception <span class="code-keyword">as</span> <span class="code-property">e</span>:  <span class="code-comment"># network, credentials, refusal, malformed output -&gt; template, same flow</span></span><span class="code-line">        <span class="code-function">log</span>({<span class="code-string">"source"</span>: <span class="code-string">"template"</span>, <span class="code-string">"tool_calls"</span>: calls, <span class="code-string">"error"</span>: <span class="code-function">type</span>(e).__name__})</span><span class="code-line">        <span class="code-keyword">return</span> {**fallback, <span class="code-string">"tool_calls"</span>: calls,</span><span class="code-line">                <span class="code-string">"text"</span>: fallback[<span class="code-string">"text"</span>] + <span class="code-string">f"\n\n_(LLM review unavailable: {type(e).__name__}; template shown)_"</span>}</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">If anything at all went wrong above…</p>
+              <p class="tl">…write in the audit log that the template was used, which tools were called, and the kind of error…</p>
+              <p class="tl">…and return the template review instead…</p>
+              <p class="tl">…with a short note saying the AI wording was unavailable and why.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="pattern-cards">
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-5)"><div class="pattern-icon" style="background: var(--color-actor-5)">✍️</div><h4 class="pattern-title">Claude may</h4><p class="pattern-desc">Gather facts through tools, reword the review, state the caveats plainly.</p></div>
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)"><div class="pattern-icon" style="background: var(--color-actor-1)">🚫</div><h4 class="pattern-title">Claude may not</h4><p class="pattern-desc">Change severity, deadlines or the suggested action, move a case, or add facts the tools did not return.</p></div>
+        </div>
+      </section>
+
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Check your understanding</h2>
+        <div class="quiz-container" id="quiz-module5">
+          <div class="quiz-question-block" data-correct="c"
+               data-explanation-right="Right. With no key the orchestrator returns the template review right away. Cases, deadlines and decisions are unaffected."
+               data-explanation-wrong="The language model is optional by design. With no key, the template review appears and every other part works exactly the same.">
+            <div class="scenario-block"><div class="scenario-context"><span class="scenario-label">Scenario</span>
+              <p>On presentation day the venue Wi-Fi is down, so Claude cannot be reached. What does the nurse see on "Explain with AI agent"?</p></div></div>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>An error page, and the dashboard stops</span></button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>An empty review, and the case cannot be resolved</span></button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>The template review with a short "AI unavailable" note</span></button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block" data-correct="b"
+               data-explanation-right="Exactly. The results are cached as JSON files, so the demo only needs them on the laptop. The cluster and GPU are needed only to retrain."
+               data-explanation-wrong="The models never run during the demo. Their saved results (one JSON per exam) are what run.py loads, so copying those to the laptop beforehand is enough.">
+            <div class="scenario-block"><div class="scenario-context"><span class="scenario-label">Scenario</span>
+              <p>The cluster is down for maintenance the day before the demo. Can you still demo real ECG and MRI results?</p></div></div>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>No, the models run on the cluster during the demo</span></button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>Yes, if the result files were already fetched to the laptop</span></button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>Only with simulated outputs</span></button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block" data-correct="a"
+               data-explanation-right="Yes. Claude's output only fills the wording fields; severity comes from the rules and is copied in unchanged, and the deadline and reminders keep running. Wording still matters to a reader, which is why the instructions forbid adding judgments."
+               data-explanation-wrong="The review tool has no severity or deadline field at all. Those come from the deterministic rules, so the case and its reminders are unchanged. Only the wording differs.">
+            <div class="scenario-block"><div class="scenario-context"><span class="scenario-label">Scenario</span>
+              <p>Claude writes "this looks minor" in its summary of a critical case. Can that change the case's severity or its 4-hour deadline?</p></div></div>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>No, severity and deadlines are set by the rules, not by Claude</span></button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>Yes, the case would drop to "caution"</span></button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>Yes, the deadline is recalculated from the summary</span></button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <button class="quiz-check-btn" onclick="checkQuiz('quiz-module5')">Check Answers</button>
+          <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module5')">Try Again</button>
+        </div>
+      </section>
+    </div>
+  </div>
+</section>

@@ -1,0 +1,241 @@
+<section class="module" id="module-4" style="background: var(--color-bg)">
+  <div class="module-content">
+    <header class="module-header animate-in">
+      <span class="module-number">04</span>
+      <h1 class="module-title">Nothing slips through</h1>
+      <p class="module-subtitle">How every escalation is tracked from alert to the patient's action, and who is allowed to move it.</p>
+    </header>
+
+    <div class="module-body">
+      <section class="screen animate-in">
+        <h2 class="screen-heading">A parcel with a tracking number</h2>
+        <p>A parcel is scanned at every stop, and if it sits too long in one depot someone gets an email. With the platform alone, an alert is more like a letter dropped through a door: if nobody opens it, nobody ever knows.</p>
+        <p>In the simulation, <strong>924</strong> platform alerts were simply forgotten and never found. With HeartSafe, 853 of the 857 cases that would have stalled were caught by a reminder.</p>
+
+        <div class="flow-animation" data-steps='[
+          {"highlight":"flow-m4-1","label":"created: the agent opens the case with an acknowledge deadline (4 h if critical)"},
+          {"highlight":"flow-m4-2","label":"acknowledged: a clinician has seen it. Missed the deadline? A reminder, then a backup clinician","packet":true,"from":"m4-1","to":"m4-2"},
+          {"highlight":"flow-m4-3","label":"reviewed: the clinician has looked at the evidence and the review","packet":true,"from":"m4-2","to":"m4-3"},
+          {"highlight":"flow-m4-4","label":"resolved: closed with a required note saying what was decided","packet":true,"from":"m4-3","to":"m4-4"},
+          {"highlight":"flow-m4-5","label":"Patient loop starts: the instruction goes to the patient and is followed until done","packet":true,"from":"m4-4","to":"m4-5"}
+        ]'>
+          <div class="flow-actors">
+            <div class="flow-actor" id="flow-m4-1"><div class="flow-actor-icon">🆕</div><span>created</span></div>
+            <div class="flow-actor" id="flow-m4-2"><div class="flow-actor-icon">👀</div><span>acknowledged</span></div>
+            <div class="flow-actor" id="flow-m4-3"><div class="flow-actor-icon">🔎</div><span>reviewed</span></div>
+            <div class="flow-actor" id="flow-m4-4"><div class="flow-actor-icon">✅</div><span>resolved</span></div>
+            <div class="flow-actor" id="flow-m4-5"><div class="flow-actor-icon">🏠</div><span>patient loop</span></div>
+          </div>
+          <div class="flow-packet"></div>
+          <div class="flow-step-label">Click "Next Step" to begin</div>
+          <div class="flow-controls">
+            <button class="btn flow-next-btn">Next Step</button>
+            <button class="btn flow-reset-btn">Restart</button>
+            <span class="flow-progress"></span>
+          </div>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">💡</div>
+          <div class="callout-content">
+            <strong class="callout-title">A state machine</strong>
+            <p>A case can only be in one named state at a time, and only certain moves are allowed between them. Engineers call this a <em>state machine</em>. Saying "model this as a state machine with these transitions" gets you far more reliable code from an AI tool than "keep track of the case status".</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Only a clinician moves a case</h2>
+        <p>The rule "HeartSafe never decides" is not a promise in a slide. It is enforced in <code>tracker.py</code>: the function that moves a case refuses anyone who is not a clinician.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line">    <span class="code-keyword">def</span> <span class="code-function">act</span>(<span class="code-keyword">self</span>, case_id, action, t, actor, role, note=<span class="code-string">""</span>):</span><span class="code-line">        <span class="code-keyword">if</span> role != <span class="code-string">"clinician"</span>:</span><span class="code-line">            <span class="code-keyword">raise</span> <span class="code-function">PermissionDenied</span>(<span class="code-string">f"only a clinician can {action} a case"</span>)</span><span class="code-line">        frm, to = CLINICIAN_ACTIONS[action]</span><span class="code-line">        case = <span class="code-keyword">self</span>.<span class="code-function">get</span>(case_id)</span><span class="code-line">        <span class="code-keyword">if</span> case[<span class="code-string">"state"</span>] != frm:</span><span class="code-line">            <span class="code-keyword">raise</span> <span class="code-function">ValueError</span>(<span class="code-string">f"case {case_id} is {case['state']}, cannot {action}"</span>)</span><span class="code-line">        <span class="code-keyword">if</span> action == <span class="code-string">"resolve"</span> <span class="code-keyword">and</span> <span class="code-keyword">not</span> note.<span class="code-function">strip</span>():</span><span class="code-line">            <span class="code-keyword">raise</span> <span class="code-function">ValueError</span>(<span class="code-string">"a resolution note is required"</span>)</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Move a case one step (acknowledge, review or resolve), recording who did it and their role.</p>
+              <p class="tl">If the person is not a clinician…</p>
+              <p class="tl">…stop with a "permission denied" <span class="term" data-definition="A signal that something went wrong. Raising an exception stops the current action; the code that called it can catch it and show a message, as the dashboard does.">error</span>.</p>
+              <p class="tl">Look up which state this action moves from and to.</p>
+              <p class="tl">Fetch the case.</p>
+              <p class="tl">If it is not in the right starting state (you cannot resolve a case nobody acknowledged)…</p>
+              <p class="tl">…refuse and say why.</p>
+              <p class="tl">Resolving without a note?</p>
+              <p class="tl">Refuse: a decision must be written down.</p>
+            </div>
+          </div>
+        </div>
+
+        <p>Every move is then written to an
+          <span class="term" data-definition="A record you only ever add to, never edit or delete. If something goes wrong, you can replay exactly who did what and when.">append-only</span> audit log in a small
+          <span class="term" data-definition="A lightweight database stored as a single file (here heartsafe.db). No server needed; Python can read and write it directly.">SQLite</span> database:</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line">    <span class="code-keyword">def</span> <span class="code-function">_log</span>(<span class="code-keyword">self</span>, case_id, t, actor, role, action, detail=<span class="code-keyword">None</span>):</span><span class="code-line">        <span class="code-keyword">self</span>.db.<span class="code-function">execute</span>(<span class="code-string">"INSERT INTO audit (case_id, t_h, actor, role, action, detail) VALUES (?,?,?,?,?,?)"</span>,</span><span class="code-line">                        (case_id, t, actor, role, action, json.<span class="code-function">dumps</span>(detail) <span class="code-keyword">if</span> detail <span class="code-keyword">is</span> <span class="code-keyword">not</span> <span class="code-keyword">None</span> <span class="code-keyword">else</span> <span class="code-keyword">None</span>))</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Write one line to the log: which case, when, who, their role, what they did…</p>
+              <p class="tl">…using an INSERT (add a row), never an UPDATE (change a row)…</p>
+              <p class="tl">…with any extra detail stored as JSON text.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The patient loop: the last mile</h2>
+        <p>A resolved case is not the end. The clinician's decision ("increase the diuretic", "come in for assessment") only helps if the patient acts on it. Here is Mary's loop after her day-50 case:</p>
+
+        <div class="chat-window" id="chat-module4">
+          <div class="chat-messages">
+            <div class="chat-message" data-msg="0" data-sender="hs" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-1)">H</div>
+              <div class="chat-bubble"><span class="chat-sender" style="color: var(--color-actor-1)">HeartSafe → Mary</span><p>Your care team has a plan for you: follow it and tap "confirm" when done. Please also keep your daily readings.</p></div>
+            </div>
+            <div class="chat-message" data-msg="1" data-sender="hs" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-1)">H</div>
+              <div class="chat-bubble"><span class="chat-sender" style="color: var(--color-actor-1)">HeartSafe</span><p>The confirmation deadline passed with no answer. Remote community: maybe no signal. Contacting her caregiver.</p></div>
+            </div>
+            <div class="chat-message" data-msg="2" data-sender="cg" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-2)">C</div>
+              <div class="chat-bubble"><span class="chat-sender" style="color: var(--color-actor-2)">Caregiver</span><p>I'm with her now. Her phone was off. Confirmed: we've read the plan.</p></div>
+            </div>
+            <div class="chat-message" data-msg="3" data-sender="hs" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-1)">H</div>
+              <div class="chat-bubble"><span class="chat-sender" style="color: var(--color-actor-1)">HeartSafe</span><p>Thanks. I'll check her readings 72 hours after she's done it.</p></div>
+            </div>
+            <div class="chat-message" data-msg="4" data-sender="hs" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-1)">H</div>
+              <div class="chat-bubble"><span class="chat-sender" style="color: var(--color-actor-1)">HeartSafe → Nurse</span><p>Readings still show weight gain and breathlessness. Reopening a clinical case for you.</p></div>
+            </div>
+            <div class="chat-message" data-msg="5" data-sender="nurse" style="display:none">
+              <div class="chat-avatar" style="background: var(--color-actor-5)">N</div>
+              <div class="chat-bubble"><span class="chat-sender" style="color: var(--color-actor-5)">Nurse</span><p>Seen. Adjusting the plan. (A few days later, on day 66, her readings improve and the loop closes.)</p></div>
+            </div>
+          </div>
+          <div class="chat-typing" style="display:none">
+            <div class="chat-avatar" id="chat-module4-typing-avatar">?</div>
+            <div class="chat-typing-dots"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>
+          </div>
+          <div class="chat-controls">
+            <button class="btn chat-next-btn">Next Message</button>
+            <button class="btn chat-all-btn">Play All</button>
+            <button class="btn chat-reset-btn">Replay</button>
+            <span class="chat-progress"></span>
+          </div>
+        </div>
+
+        <p>Like a case, the loop has its own permission rule: only the patient's side can say "confirmed" or "done".</p>
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line">    <span class="code-keyword">def</span> <span class="code-function">patient_step</span>(<span class="code-keyword">self</span>, case_id, step, t, actor, role):</span><span class="code-line">        <span class="code-string">""</span><span class="code-string">"confirm or action_done, recorded by the patient side only."</span><span class="code-string">""</span></span><span class="code-line">        <span class="code-keyword">if</span> role <span class="code-keyword">not</span> <span class="code-keyword">in</span> PATIENT_SIDE:</span><span class="code-line">            <span class="code-keyword">raise</span> <span class="code-function">PermissionDenied</span>(<span class="code-string">f"only the patient, a caregiver or a community health worker can {step}"</span>)</span><span class="code-line">        frm, to, col = {<span class="code-string">"confirm"</span>: (<span class="code-string">"notified"</span>, <span class="code-string">"confirmed"</span>, <span class="code-string">"confirmed_h"</span>),</span><span class="code-line">                        <span class="code-string">"action_done"</span>: (<span class="code-string">"confirmed"</span>, <span class="code-string">"action_done"</span>, <span class="code-string">"action_done_h"</span>)}[step]</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Record a patient-side step: "confirm" or "action_done".</p>
+              <p class="tl">(A short description of the function.)</p>
+              <p class="tl">If whoever is recording it is not the patient, a caregiver or a community health worker…</p>
+              <p class="tl">…refuse. The agent can send messages, but never tick the box for the patient.</p>
+              <p class="tl">"confirm" moves notified → confirmed; "action_done" moves confirmed → action_done…</p>
+              <p class="tl">…and each step's time goes in its own column.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Who chases late cases?</h2>
+        <p>In the simulation there are no real nurses, so when a case is created, <code>clinicians.py</code> draws how long the (simulated) nurse takes, and when reminders would fire. The agent then writes those reminders into the tracker:</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line">        <span class="code-keyword">for</span> t, to <span class="code-keyword">in</span> f[<span class="code-string">"reminders"</span>]:</span><span class="code-line">            <span class="code-keyword">if</span> now + t &lt;= <span class="code-keyword">self</span>.horizon:</span><span class="code-line">                <span class="code-keyword">self</span>.tr.<span class="code-function">remind</span>(cid, now + t, to)</span><span class="code-line">        who = <span class="code-string">"nurse_backup"</span> <span class="code-keyword">if</span> <span class="code-function">any</span>(to == <span class="code-string">"backup"</span> <span class="code-keyword">for</span> _, to <span class="code-keyword">in</span> f[<span class="code-string">"reminders"</span>]) <span class="code-keyword">else</span> <span class="code-string">"nurse_primary"</span></span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">For each reminder the response model says would be needed (when, and to whom)…</p>
+              <p class="tl">…if it falls inside the 90-day study period…</p>
+              <p class="tl">…record it on the case and in the audit log.</p>
+              <p class="tl">If any reminder went to the backup, the backup nurse is the one who acts.</p>
+            </div>
+          </div>
+        </div>
+
+        <p>In a real deployment, a scheduler would instead ask the tracker every few minutes with an
+          <span class="term" data-definition="Structured Query Language: the language used to ask a database for rows that match conditions, e.g. 'all cases past their deadline'.">SQL</span> query, already written in <code>tracker.due_reminders()</code>: "which cases are past a deadline right now?"</p>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">🧪</div>
+          <div class="callout-content">
+            <strong class="callout-title">Simulated people, real rules</strong>
+            <p>The nurses and patients are simulated, using response times written as assumptions in <code>config.yaml</code>. But the tracker they act through is the same one the dashboard uses, with the same permission checks. Both HeartSafe and the platform-alone baseline get the same simulated people.</p>
+          </div>
+        </div>
+
+        <div class="icon-rows">
+          <div class="icon-row"><div class="icon-circle" style="background: var(--color-actor-4)">⏰</div><div><strong>First miss</strong><p>A reminder to the assigned clinician.</p></div></div>
+          <div class="icon-row"><div class="icon-circle" style="background: var(--color-actor-1)">🔁</div><div><strong>Second miss</strong><p>The case is routed to a backup clinician.</p></div></div>
+          <div class="icon-row"><div class="icon-circle" style="background: var(--color-actor-2)">📜</div><div><strong>Always</strong><p>Each reminder is written to the audit log, so the trail shows exactly how late each step was.</p></div></div>
+        </div>
+      </section>
+
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Check your understanding</h2>
+        <div class="quiz-container" id="quiz-module4">
+          <div class="quiz-question-block" data-correct="b"
+               data-explanation-right="Correct. The check sits inside the tracker itself, so it applies whoever calls it: the dashboard, the agent, or a future script."
+               data-explanation-wrong="Hiding a button only protects one screen. The check lives in tracker.act(), so any code path that tries to resolve a case as 'agent' is refused.">
+            <div class="scenario-block"><div class="scenario-context"><span class="scenario-label">Scenario</span>
+              <p>A teammate asks an AI tool to "let the agent auto-resolve low-priority cases" and it writes code that calls <code>tr.act(case, "resolve", t, "heartsafe", "agent", "auto")</code>. What happens when it runs?</p></div></div>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>It works, because the note is not empty</span></button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>It fails with "permission denied": only a clinician can resolve</span></button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>It works, but only in the dashboard</span></button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block" data-correct="a"
+               data-explanation-right="Yes. Because the log is append-only, the trail shows every reminder, who acknowledged, and when. It is the first place to look."
+               data-explanation-wrong="The case row only holds the latest state. The audit log has every step with its time and actor, so it answers 'what happened and when'.">
+            <div class="scenario-block"><div class="scenario-context"><span class="scenario-label">Scenario</span>
+              <p>A manager asks why a critical case took 9 hours to be acknowledged. Where do you look first?</p></div></div>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>The case's audit log</span></button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>The config file's deadlines</span></button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>The ECG model's output</span></button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block" data-correct="c"
+               data-explanation-right="Right. The loop cannot close itself: when the patient does not respond, HeartSafe contacts helpers, and if nobody is reached it opens a follow-up task for the nurse."
+               data-explanation-wrong="HeartSafe never records a confirmation for the patient. It contacts the caregiver or community health worker, and if that fails, the nurse gets a patient follow-up task.">
+            <div class="scenario-block"><div class="scenario-context"><span class="scenario-label">Scenario</span>
+              <p>A remote patient never answers the instruction, and has no caregiver. What should happen?</p></div></div>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>HeartSafe marks the instruction as confirmed after 48 hours</span></button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>Nothing: the clinician already resolved the case</span></button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>A community health worker is contacted, then the nurse gets a follow-up task</span></button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <button class="quiz-check-btn" onclick="checkQuiz('quiz-module4')">Check Answers</button>
+          <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module4')">Try Again</button>
+        </div>
+      </section>
+    </div>
+  </div>
+</section>

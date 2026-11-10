@@ -151,6 +151,19 @@ def _patient_days(pid, attrs, n_days, cfg, rng, script=None):
     return rows
 
 
+def _personal_limits(p, cfg):
+    """Enrollment: personal limits for a patient whose usual BP or heart rate sits near a default limit."""
+    rules, m = cfg["alert_rules"], cfg["simulation"]["patient"]["personal_limit_margin"]
+    if p["s0"] - m["sbp"] < rules["sbp_low"]:
+        p["sbp_low"] = round(p["s0"] - m["sbp"])
+    if p["s0"] + m["sbp"] > rules["sbp_high"]:
+        p["sbp_high"] = round(p["s0"] + m["sbp"])
+    if p["h0"] - m["hr"] < rules["hr_low"]:
+        p["hr_low"] = round(p["h0"] - m["hr"])
+    if p["h0"] + m["hr"] > rules["hr_high"]:
+        p["hr_high"] = round(p["h0"] + m["hr"])
+
+
 def simulate_cohort(cfg, n_patients=None, n_days=None, seed=None, demo=True):
     """Screen candidates until n_patients are enrolled. The screening log is in patients.attrs["screening"]."""
     co, sc, inc = cfg["cohort"], cfg["simulation"], cfg["inclusion"]
@@ -166,13 +179,14 @@ def simulate_cohort(cfg, n_patients=None, n_days=None, seed=None, demo=True):
             for r in why:
                 reasons[r] = reasons.get(r, 0) + 1
             continue
+        _personal_limits(cand, cfg)
         pats.append(cand)
         rows += _patient_days(cand["patient_id"], cand, n_days, cfg, rng)
 
     if demo:
         # Scripted demo patient for the presentation: remote community, discharged 3 days ago,
         # new scale on day 20 (nurse verifies it, then it is filtered), real decompensation
-        # from day 50 (should escalate).
+        # on days 50-54 (should escalate; the care team's plan works and her readings recover).
         attrs = {"patient_id": "DEMO-MARY", "remoteness": "remote", "sex": "F", "age": 68, "age_band": age_band(68),
                  "device": "own_scale", "ecg_kit": True, "nyha": "III", "hf_admission_h": 120,
                  "days_since_discharge": 3, "caregiver": True, "can_self_measure": True, "beta_blocker": True,
@@ -181,7 +195,7 @@ def simulate_cohort(cfg, n_patients=None, n_days=None, seed=None, demo=True):
                  "w0": 71.0, "s0": 128.0, "h0": 74.0, "d0": 76.0, "o0": 97.0, "k0": 4.2}
         pats.append(attrs)
         rows += _patient_days("DEMO-MARY", attrs, n_days, cfg, np.random.default_rng(42), script={
-            "scale_change_day": 20, "scale_offset": 2.6, "episode_start": 50, "episode_len": 12,
+            "scale_change_day": 20, "scale_offset": 2.6, "episode_start": 50, "episode_len": 5,
             "missing_days": [44, 45, 46], "cuff_error_day": 30})
 
     patients = pd.DataFrame(pats).drop(columns=["w0", "s0", "h0", "d0", "o0", "k0"])

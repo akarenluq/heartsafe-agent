@@ -1,0 +1,161 @@
+<section class="module" id="module-2" style="background: var(--color-bg)">
+  <div class="module-content">
+    <header class="module-header animate-in">
+      <span class="module-number">02</span>
+      <h1 class="module-title">Meet the cast</h1>
+      <p class="module-subtitle">Which part of the code does which job, so you can tell an AI tool exactly where a change belongs.</p>
+    </header>
+
+    <div class="module-body">
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Three workshops under one roof</h2>
+        <p>Think of the repo as a hospital wing with three departments: two labs that produce test results (ECG and MRI), and the ward office that uses those results to coordinate care. Each lives in its own
+          <span class="term" data-definition="A directory on disk. In a repo, top-level folders usually separate parts of the project that can be worked on independently.">folder</span>.</p>
+
+        <div class="file-tree">
+          <div class="ft-folder open">
+            <span class="ft-name">ecg/</span><span class="ft-desc">The ECG lab: trains a heart-rhythm classifier and checks each recording</span>
+            <div class="ft-children">
+              <div class="ft-file"><span class="ft-name">scripts/01_prepare.py … 04_audit_eval.py</span><span class="ft-desc">Numbered steps, run in order</span></div>
+              <div class="ft-folder"><span class="ft-name">slurm/</span><span class="ft-desc">Job files for the training cluster (Module 5)</span></div>
+              <div class="ft-file"><span class="ft-name">config.yaml</span><span class="ft-desc">Every threshold and setting for the ECG part</span></div>
+            </div>
+          </div>
+          <div class="ft-folder open">
+            <span class="ft-name">imaging/</span><span class="ft-desc">The MRI lab: outlines the heart chambers on cardiac MRI and measures pumping function</span>
+          </div>
+          <div class="ft-folder open">
+            <span class="ft-name">agent/</span><span class="ft-desc">The ward office: the HeartSafe agent and its dashboard</span>
+            <div class="ft-children">
+              <div class="ft-folder"><span class="ft-name">heartsafe/</span><span class="ft-desc">The agent's Python package (one file per job, below)</span></div>
+              <div class="ft-file"><span class="ft-name">app.py</span><span class="ft-desc">The dashboard nurses and administrators click on</span></div>
+              <div class="ft-file"><span class="ft-name">config.yaml</span><span class="ft-desc">Alert rules, deadlines, simulation assumptions</span></div>
+              <div class="ft-folder"><span class="ft-name">tests/</span><span class="ft-desc">Automatic checks that the rules still hold</span></div>
+            </div>
+          </div>
+          <div class="ft-folder"><span class="ft-name">plans/</span><span class="ft-desc">The execution plan PDF</span></div>
+        </div>
+      </section>
+
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The agent's team, one file each</h2>
+        <p>Inside <code>agent/heartsafe/</code>, every
+          <span class="term" data-definition="A single .py file of Python code. Other files can import it to use its functions. Splitting code into modules keeps each one focused on one job.">module</span> has one job. Click a part to see what it does.</p>
+
+        <div class="arch-diagram">
+          <div class="arch-zone">
+            <h4 class="arch-zone-label">Input</h4>
+            <div class="arch-component" data-desc="simulate.py builds the fake cohort: 2,001 screened patients over 90 days, with episodes, scale changes, missed days and typing errors. monitoring.py reads any platform's feed and applies the platform's own alert rules."><div class="arch-icon">📡</div><span>simulate.py + monitoring.py</span></div>
+            <div class="arch-component" data-desc="signals.py loads the ECG and MRI results produced by the two labs (one JSON file per exam) and picks one for each patient who needs a test."><div class="arch-icon">🧪</div><span>signals.py</span></div>
+          </div>
+          <div class="arch-zone">
+            <h4 class="arch-zone-label">Thinking</h4>
+            <div class="arch-component" data-desc="agent.py is the conductor. For each patient and day it decides: repeat, filter, nurse check, escalate, outreach, or follow up with the patient."><div class="arch-icon">🤖</div><span>agent.py</span></div>
+            <div class="arch-component" data-desc="reliability.py answers one question: can we trust this reading, this ECG, this MRI? It returns flags and plain-English reasons."><div class="arch-icon">🔍</div><span>reliability.py</span></div>
+            <div class="arch-component" data-desc="review.py writes the structured review from facts only. orchestrator.py lets Claude reword it by calling read-only tools; the template is always the fallback."><div class="arch-icon">📝</div><span>review.py + orchestrator.py</span></div>
+          </div>
+          <div class="arch-zone">
+            <h4 class="arch-zone-label">Memory and oversight</h4>
+            <div class="arch-component" data-desc="tracker.py stores cases, patient loops and the audit log in a small SQLite database. It enforces who is allowed to do what."><div class="arch-icon">📦</div><span>tracker.py</span></div>
+            <div class="arch-component" data-desc="equity.py compares groups (remoteness, sex, age, device) and turns gaps into safeguard proposals. evaluate.py scores HeartSafe against the platform alone."><div class="arch-icon">⚖️</div><span>equity.py + evaluate.py</span></div>
+            <div class="arch-component" data-desc="run.py ties it all together: feed, agent, baseline, evaluation and equity audit, then writes everything the dashboard reads into data/."><div class="arch-icon">▶️</div><span>run.py</span></div>
+          </div>
+          <div class="arch-description">Click any part to learn what it does</div>
+        </div>
+      </section>
+
+      <section class="screen animate-in">
+        <h2 class="screen-heading">One shared language</h2>
+        <p>The ECG lab, the MRI lab and the agent were built at the same time by different people. That worked because they agreed on one
+          <span class="term" data-definition="JavaScript Object Notation: a plain-text format for structured data, made of named fields like {&quot;probability&quot;: 0.83}. Almost every program can read and write it.">JSON</span> shape for every result, like a standard lab-report form.</p>
+
+        <div class="badge-list">
+          <div class="badge-item"><code class="badge-code">prediction, probability</code><span class="badge-desc">What the model thinks, and how sure it says it is</span></div>
+          <div class="badge-item"><code class="badge-code">uncertainty</code><span class="badge-desc">How much the model's own parts disagree</span></div>
+          <div class="badge-item"><code class="badge-code">quality</code><span class="badge-desc">Is the signal or image good enough to read at all?</span></div>
+          <div class="badge-item"><code class="badge-code">shift_score</code><span class="badge-desc">How different this device or scanner is from the training data</span></div>
+          <div class="badge-item"><code class="badge-code">flags, suggested_action</code><span class="badge-desc">What is wrong, and accept / repeat / escalate</span></div>
+        </div>
+
+        <p>Here is the agent reading an MRI result in that shared shape, in <code>reliability.py</code>:</p>
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line"><span class="code-keyword">def</span> <span class="code-function">assess_mri</span>(o):</span><span class="code-line">    flags = o.<span class="code-function">get</span>(<span class="code-string">"flags"</span>, [])</span><span class="code-line">    meta = o.<span class="code-function">get</span>(<span class="code-string">"metadata"</span>) <span class="code-keyword">or</span> {}</span><span class="code-line">    <span class="code-keyword">return</span> {<span class="code-string">"reliable"</span>: o.<span class="code-function">get</span>(<span class="code-string">"suggested_action"</span>, <span class="code-string">"accept"</span>) == <span class="code-string">"accept"</span>, <span class="code-string">"action"</span>: o.<span class="code-function">get</span>(<span class="code-string">"suggested_action"</span>, <span class="code-string">"accept"</span>),</span><span class="code-line">            <span class="code-string">"flags"</span>: flags, <span class="code-string">"reasons"</span>: [FLAG_TEXT.<span class="code-function">get</span>(f, f.<span class="code-function">replace</span>(<span class="code-string">"_"</span>, <span class="code-string">" "</span>)) <span class="code-keyword">for</span> f <span class="code-keyword">in</span> flags],</span><span class="code-line">            <span class="code-string">"caveats"</span>: o.<span class="code-function">get</span>(<span class="code-string">"caveats"</span>, []), <span class="code-string">"lvef"</span>: o.<span class="code-function">get</span>(<span class="code-string">"prediction"</span>, {}).<span class="code-function">get</span>(<span class="code-string">"lvef_pct"</span>),</span><span class="code-line">            <span class="code-string">"uncertainty"</span>: o.<span class="code-function">get</span>(<span class="code-string">"uncertainty"</span>), <span class="code-string">"scanner"</span>: meta.<span class="code-function">get</span>(<span class="code-string">"vendor_name"</span>), <span class="code-string">"exam_id"</span>: o.<span class="code-function">get</span>(<span class="code-string">"exam_id"</span>)}</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">A <span class="term" data-definition="A named, reusable block of code that takes inputs and returns a result. 'def' starts one in Python.">function</span> that takes one MRI result, called <code>o</code>.</p>
+              <p class="tl">Get its list of flags, or an empty list if there are none.</p>
+              <p class="tl">Get the scanner details, or nothing if they are missing.</p>
+              <p class="tl">Trust it only if the imaging lab itself said "accept".</p>
+              <p class="tl">Turn each flag into words a nurse understands, and keep any caveats.</p>
+              <p class="tl">Pull out the ejection fraction (how much blood the heart pumps per beat).</p>
+              <p class="tl">Keep the uncertainty, the scanner make and the exam id for the review.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">🤝</div>
+          <div class="callout-content">
+            <strong class="callout-title">Agree on the interface first</strong>
+            <p>Because the shape was fixed on day one, the agent could be built on fake "mock" outputs while the real models were still training. When you split work between people or AI agents, write down the data contract first: it is the cheapest way to avoid an integration mess later.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Rules live in the config, not the code</h2>
+        <p>Every clinical number (deadlines, alert limits, assumptions) is in <code>agent/config.yaml</code>, a
+          <span class="term" data-definition="A human-readable settings format that uses indentation and 'name: value' pairs. Easy for non-programmers (like a cardiologist reviewing thresholds) to read and edit.">YAML</span> file. The agent reads it but never changes it.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line">followup:</span><span class="code-line">  <span class="code-property">ack_deadline_h</span>: {<span class="code-property">critical</span>: <span class="code-number">4</span>, <span class="code-property">caution</span>: <span class="code-number">24</span>, <span class="code-property">low</span>: <span class="code-number">72</span>}</span><span class="code-line">  <span class="code-property">resolve_deadline_h</span>: {<span class="code-property">critical</span>: <span class="code-number">48</span>, <span class="code-property">caution</span>: <span class="code-number">120</span>, <span class="code-property">low</span>: <span class="code-number">168</span>}</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Settings for following up on cases.</p>
+              <p class="tl">A nurse must acknowledge a critical case within 4 hours, a caution case within 24, a low one within 72.</p>
+              <p class="tl">The case must be resolved within 48, 120 or 168 hours.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">🩺</div>
+          <div class="callout-content">
+            <strong class="callout-title">Why this matters</strong>
+            <p>When two cardiologists reviewed the alert rules, nobody had to dig through Python: the changes went into this one file. Ask an AI tool to "move magic numbers into config" whenever experts, not programmers, own the numbers.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Where does the change go?</h2>
+        <p>Drag each request onto the file you would ask an AI tool to change.</p>
+
+        <div class="dnd-container" id="dnd-module2">
+          <div class="dnd-chips">
+            <div class="dnd-chip" draggable="true" data-answer="config">config.yaml</div>
+            <div class="dnd-chip" draggable="true" data-answer="reliability">reliability.py</div>
+            <div class="dnd-chip" draggable="true" data-answer="tracker">tracker.py</div>
+            <div class="dnd-chip" draggable="true" data-answer="app">app.py</div>
+          </div>
+          <div class="dnd-zones">
+            <div class="dnd-zone" data-correct="config"><p class="dnd-zone-label">"Critical cases should be acknowledged within 2 hours, not 4."</p><div class="dnd-zone-target">Drop here</div></div>
+            <div class="dnd-zone" data-correct="reliability"><p class="dnd-zone-label">"Add a new check that spots a weight typed in stones instead of kilograms."</p><div class="dnd-zone-target">Drop here</div></div>
+            <div class="dnd-zone" data-correct="tracker"><p class="dnd-zone-label">"Store who confirmed the patient's message, with a timestamp."</p><div class="dnd-zone-target">Drop here</div></div>
+            <div class="dnd-zone" data-correct="app"><p class="dnd-zone-label">"Add a button that shows the patient's last 30 days of weight."</p><div class="dnd-zone-target">Drop here</div></div>
+          </div>
+          <button class="btn" onclick="checkDnD('dnd-module2')">Check Matches</button>
+          <button class="btn" onclick="resetDnD('dnd-module2')">Reset</button>
+        </div>
+      </section>
+    </div>
+  </div>
+</section>

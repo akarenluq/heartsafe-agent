@@ -1,0 +1,188 @@
+<section class="module" id="module-1" style="background: var(--color-bg-warm)">
+  <div class="module-content">
+    <header class="module-header animate-in">
+      <span class="module-number">01</span>
+      <h1 class="module-title">One patient, one bad week</h1>
+      <p class="module-subtitle">What HeartSafe does, told through the 90 days of one patient called Mary.</p>
+    </header>
+
+    <div class="module-body">
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The problem HeartSafe solves</h2>
+        <p>People with heart failure go home from hospital with a scale, a blood-pressure cuff and an app. Every day their readings go to a
+          <span class="term" data-definition="A service such as Medly (used at UHN in Toronto) that collects a patient's daily readings at home and raises an alert when a rule is broken, e.g. weight up 2 kg in a few days.">remote monitoring platform</span>, which raises an alert when something looks wrong.</p>
+        <p>The platform is good at raising alerts. It is not built to ask <em>"is this reading even real?"</em>, to make sure someone acts on the alert, or to notice that patients in remote communities are served worse.</p>
+
+        <div class="pattern-cards stagger-children">
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-1)">
+            <div class="pattern-icon" style="background: var(--color-actor-1)">🔍</div>
+            <h4 class="pattern-title">Check</h4>
+            <p class="pattern-desc">Is the reading, the ECG or the MRI trustworthy? A wrong scale should not send a nurse running.</p>
+          </div>
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-2)">
+            <div class="pattern-icon" style="background: var(--color-actor-2)">📝</div>
+            <h4 class="pattern-title">Explain</h4>
+            <p class="pattern-desc">Every escalation comes with a short review: why it was flagged, what can and cannot be trusted.</p>
+          </div>
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-3)">
+            <div class="pattern-icon" style="background: var(--color-actor-3)">📦</div>
+            <h4 class="pattern-title">Track</h4>
+            <p class="pattern-desc">Each case has deadlines, reminders and a log, and follows the instruction all the way to the patient.</p>
+          </div>
+          <div class="pattern-card" style="border-top: 3px solid var(--color-actor-5)">
+            <div class="pattern-icon" style="background: var(--color-actor-5)">⚖️</div>
+            <h4 class="pattern-title">Watch fairness</h4>
+            <p class="pattern-desc">Compares urban, rural and remote patients and proposes fixes when one group falls behind.</p>
+          </div>
+        </div>
+
+        <div class="callout callout-accent">
+          <div class="callout-icon">💡</div>
+          <div class="callout-content">
+            <strong class="callout-title">A layer, not a replacement</strong>
+            <p>HeartSafe sits <em>on top of</em> an existing platform and reads its feed. This is a common product strategy: instead of rebuilding what works, you add the missing piece around it. When you brief an AI tool, saying "this is an adapter layer over an existing system" changes everything it suggests.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Mary's 90 days</h2>
+        <p>Mary is 68, lives in a remote community, uses her own scale and has a single-lead ECG device. She is the scripted
+          <span class="term" data-definition="A made-up patient whose story is written in advance so a demo always shows the same events. In the code she is the patient with id DEMO-MARY.">demo patient</span> inside a simulated group of 2,001 patients.</p>
+
+        <div class="step-cards">
+          <div class="step-card"><div class="step-num">20</div><div class="step-body"><strong>Weight jumps +2.4 kg overnight</strong><p>No symptoms, steady heart rate. HeartSafe suspects a new scale and asks for a repeat reading instead of escalating.</p></div></div>
+          <div class="step-card"><div class="step-num">21</div><div class="step-body"><strong>The jump is still there</strong><p>A nurse is asked to call Mary and confirm the new scale. Weight-only alerts wait for that answer.</p></div></div>
+          <div class="step-card"><div class="step-num">22</div><div class="step-body"><strong>Nurse confirms: new scale</strong><p>Readings are re-baselined. The next five days of platform alerts are filtered out as data problems.</p></div></div>
+          <div class="step-card"><div class="step-num">46</div><div class="step-body"><strong>Three days with no readings</strong><p>An outreach task goes to the team: check the device, the connection, or whether Mary needs help.</p></div></div>
+          <div class="step-card"><div class="step-num">50</div><div class="step-body"><strong>A real episode starts</strong><p>Weight up, breathless, swollen ankles. HeartSafe checks the ECG and opens a tracked clinical case with a review.</p></div></div>
+          <div class="step-card"><div class="step-num">54</div><div class="step-body"><strong>Her MRI comes back from a regional scanner</strong><p>The scanner differs from the ones the model was trained on and the model is uncertain, so the result goes to expert review.</p></div></div>
+          <div class="step-card"><div class="step-num">66</div><div class="step-body"><strong>The loop closes</strong><p>After her caregiver is contacted and the instruction is followed, her readings improve and the case is closed.</p></div></div>
+        </div>
+      </section>
+
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The journey of one reading</h2>
+        <p>Every morning, one row of Mary's data travels through the system. Click through to follow it.</p>
+
+        <div class="flow-animation" data-steps='[
+          {"highlight":"flow-m1-1","label":"The platform feed delivers one row: day, weight, BP, heart rate, symptoms, and the platform alert level"},
+          {"highlight":"flow-m1-2","label":"The agent picks up the row and sees the platform raised an alert","packet":true,"from":"m1-1","to":"m1-2"},
+          {"highlight":"flow-m1-3","label":"Reliability checks: is this a unit error, a cuff artifact or a new scale? Is the ECG trustworthy?","packet":true,"from":"m1-2","to":"m1-3"},
+          {"highlight":"flow-m1-2","label":"Verdict comes back: repeat the measurement, filter it out, or escalate","packet":true,"from":"m1-3","to":"m1-2"},
+          {"highlight":"flow-m1-4","label":"If escalated, the tracker opens a case with deadlines and writes it to the audit log","packet":true,"from":"m1-2","to":"m1-4"},
+          {"highlight":"flow-m1-5","label":"The nurse sees the case and its review in the dashboard, and acts on it","packet":true,"from":"m1-4","to":"m1-5"}
+        ]'>
+          <div class="flow-actors">
+            <div class="flow-actor" id="flow-m1-1"><div class="flow-actor-icon">📡</div><span>Platform feed</span></div>
+            <div class="flow-actor" id="flow-m1-2"><div class="flow-actor-icon">🤖</div><span>Agent</span></div>
+            <div class="flow-actor" id="flow-m1-3"><div class="flow-actor-icon">🔍</div><span>Reliability checks</span></div>
+            <div class="flow-actor" id="flow-m1-4"><div class="flow-actor-icon">📦</div><span>Case tracker</span></div>
+            <div class="flow-actor" id="flow-m1-5"><div class="flow-actor-icon">🩺</div><span>Nurse dashboard</span></div>
+          </div>
+          <div class="flow-packet"></div>
+          <div class="flow-step-label">Click "Next Step" to begin</div>
+          <div class="flow-controls">
+            <button class="btn flow-next-btn">Next Step</button>
+            <button class="btn flow-reset-btn">Restart</button>
+            <span class="flow-progress"></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="screen animate-in">
+        <h2 class="screen-heading">The heartbeat of the code</h2>
+        <p>This is the main
+          <span class="term" data-definition="A piece of code that repeats the same steps for every item in a list. Here: for every patient, then for every day.">loop</span> of the agent, in
+          <code>agent/heartsafe/agent.py</code>. It walks through every patient, day by day, exactly like the journey above.</p>
+
+        <div class="translation-block animate-in">
+          <div class="translation-code">
+            <span class="translation-label">CODE</span>
+            <pre><code><span class="code-line">            <span class="code-keyword">for</span> row <span class="code-keyword">in</span> g.<span class="code-function">sort_values</span>(<span class="code-string">"day"</span>).<span class="code-function">itertuples</span>():</span><span class="code-line">                now = row.day * <span class="code-number">24</span> + <span class="code-number">9.0</span></span><span class="code-line">                <span class="code-keyword">self</span>.<span class="code-function">_check_verification</span>(p, st, row, now)</span><span class="code-line">                <span class="code-keyword">if</span> <span class="code-keyword">not</span> row.submitted:</span><span class="code-line">                    <span class="code-keyword">self</span>.<span class="code-function">_check_loops</span>(p, st, row, now)</span><span class="code-line">                    st.missed += <span class="code-number">1</span></span><span class="code-line">                    <span class="code-keyword">if</span> st.missed == r[<span class="code-string">"missing_outreach_days"</span>]:</span><span class="code-line">                        review = <span class="code-function">build_review</span>(p, row.day, [<span class="code-string">f"no readings for {st.missed} days"</span>], st.hist, <span class="code-keyword">None</span>,</span><span class="code-line">                                              <span class="code-string">"low"</span>, [<span class="code-string">"missed_readings"</span>], [], kind=<span class="code-string">"outreach"</span>, ack_h=<span class="code-string">"{ack}"</span>)</span><span class="code-line">                        cid, _ = <span class="code-keyword">self</span>.<span class="code-function">_create_case</span>(p, st, now, <span class="code-string">"outreach"</span>, <span class="code-string">"low"</span>, review)</span><span class="code-line">                        <span class="code-keyword">self</span>.<span class="code-function">_record</span>(row, <span class="code-string">"outreach"</span>, severity=<span class="code-string">"low"</span>, case_id=cid, flags=<span class="code-string">"missed_readings"</span>)</span><span class="code-line">                    <span class="code-keyword">continue</span></span><span class="code-line">                st.missed = <span class="code-number">0</span></span><span class="code-line">                today = <span class="code-keyword">self</span>.<span class="code-function">_today</span>(row, st.offset)</span><span class="code-line">                <span class="code-keyword">self</span>.<span class="code-function">_check_loops</span>(p, st, row, now, today)</span><span class="code-line">                <span class="code-keyword">if</span> row.alert_level &gt; <span class="code-number">0</span>:</span><span class="code-line">                    <span class="code-keyword">self</span>.<span class="code-function">_handle_alert</span>(p, st, row, today, now)</span></code></pre>
+          </div>
+          <div class="translation-english">
+            <span class="translation-label">PLAIN ENGLISH</span>
+            <div class="translation-lines">
+              <p class="tl">Go through this patient's days in order.</p>
+              <p class="tl">Turn the day number into a clock time: 9 am on that day, counted in hours.</p>
+              <p class="tl">First, check whether a nurse has answered an open "is this a new scale?" question.</p>
+              <p class="tl">If no reading arrived today…</p>
+              <p class="tl">…still check any patient follow-ups that are due…</p>
+              <p class="tl">…and add one to the count of missed days in a row.</p>
+              <p class="tl">After three missed days (the number comes from the config file)…</p>
+              <p class="tl">…write a short review saying how many days are missing…</p>
+              <p class="tl">…</p>
+              <p class="tl">…open a low-priority "outreach" case…</p>
+              <p class="tl">…and record that decision.</p>
+              <p class="tl">Skip to the next day.</p>
+              <p class="tl">A reading arrived, so reset the missed-day count.</p>
+              <p class="tl">Build today's reading, correcting the weight if a new scale was confirmed.</p>
+              <p class="tl">Check follow-ups that are due now that a reading exists.</p>
+              <p class="tl">Did the platform raise an alert today?</p>
+              <p class="tl">Then hand it to the alert handler, which decides what to do (Module 3).</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout callout-info">
+          <div class="callout-icon">🕒</div>
+          <div class="callout-content">
+            <strong class="callout-title">A simulated clock</strong>
+            <p>The code never reads the real time. It uses "hours since monitoring began" so a 90-day study runs in about a minute, and the same seed always gives the same story. Engineers call this a <em>deterministic simulation</em>.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="screen animate-in">
+        <h2 class="screen-heading">Check your understanding</h2>
+        <div class="quiz-container" id="quiz-module1">
+          <div class="quiz-question-block"
+               data-correct="b"
+               data-explanation-right="Right. A jump with no symptoms and a steady heart rate looks like a data problem, so the cheapest safe move is a repeat reading, then a nurse check if it persists."
+               data-explanation-wrong="Escalating every jump is what the platform alone already does, and it floods nurses with false alarms. HeartSafe first asks for a repeat, then has a nurse confirm the scale before changing anything.">
+            <div class="scenario-block"><div class="scenario-context"><span class="scenario-label">Scenario</span>
+              <p>A new patient's weight goes up 2.5 kg overnight. No symptoms, heart rate unchanged. What does HeartSafe do first?</p></div></div>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>Opens a critical case right away</span></button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>Asks for a repeat reading, without opening a case</span></button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>Quietly resets the patient's baseline weight</span></button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="c"
+               data-explanation-right="Yes. HeartSafe adds checks, explanations and tracking around the platform's alerts; the platform still produces the readings and the alerts."
+               data-explanation-wrong="HeartSafe reads the platform's feed and alert level. It needs the platform; it does not replace it or collect readings itself.">
+            <div class="scenario-block"><div class="scenario-context"><span class="scenario-label">Scenario</span>
+              <p>A hospital asks: "If we buy HeartSafe, can we turn off our monitoring platform?" What is the honest answer?</p></div></div>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>Yes, HeartSafe collects the readings itself</span></button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>Yes, but only for urban patients</span></button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>No, HeartSafe is a layer that reads the platform's feed</span></button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <div class="quiz-question-block"
+               data-correct="a"
+               data-explanation-right="Exactly. Missing days are handled in the branch where no reading arrived, which counts missed days and opens an outreach case at three."
+               data-explanation-wrong="Look again at the loop: missing days never reach the alert handler, because there is no reading to check. They are counted in the 'no reading today' branch.">
+            <div class="scenario-block"><div class="scenario-context"><span class="scenario-label">Scenario</span>
+              <p>You want outreach to start after 2 missed days instead of 3. Where does that change go?</p></div></div>
+            <div class="quiz-options">
+              <button class="quiz-option" data-value="a" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>The config value the loop compares the missed-day count with</span></button>
+              <button class="quiz-option" data-value="b" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>The alert handler, since missing data is an alert</span></button>
+              <button class="quiz-option" data-value="c" onclick="selectOption(this)"><div class="quiz-option-radio"></div><span>The platform, which must send fake readings</span></button>
+            </div>
+            <div class="quiz-feedback"></div>
+          </div>
+
+          <button class="quiz-check-btn" onclick="checkQuiz('quiz-module1')">Check Answers</button>
+          <button class="quiz-reset-btn" onclick="resetQuiz('quiz-module1')">Try Again</button>
+        </div>
+      </section>
+    </div>
+  </div>
+</section>

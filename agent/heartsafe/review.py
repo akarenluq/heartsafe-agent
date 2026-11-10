@@ -1,13 +1,13 @@
 """Structured, explainable review for the clinical team.
 
 The review is built from facts only (platform readings, reliability checks, model
-outputs). An LLM may reword it for readability, but it gets the same facts and
-is told not to add any; the template text is always available as the fallback.
+outputs) and written from templates, so it needs no LLM: plain-language ECG and MRI
+report summaries, and the follow-up status from the follow-up watch (watch.py). A
+Claude-written version (orchestrator.py) is optional future work, off by default.
 """
-import json
-import os
-
 from .monitoring import SYMPTOM_TEXT, SYMPTOMS
+
+LVEF_BANDS = {"reduced_max": 40, "mildly_reduced_max": 49}  # % (universal definition of heart failure)
 
 NEXT_STEP = {
     "critical": ("Contact the patient within {ack} hours and assess per the heart-failure program protocol. "
@@ -55,7 +55,64 @@ def build_review(patient, day, rules_fired, hist, today, severity, flags, notes,
     }
 
 
-def render(review):
+def _band(x, good=0.8, fair=0.5):
+    return "good" if x >= good else "fair" if x >= fair else "poor"
+
+
+def summarize_ecg(e):
+    """The single-lead ECG report in one or two plain sentences."""
+    if not e:
+        return None
+    read = "abnormal" if e["abnormal"] else "no abnormality"
+    s = (f"Single-lead ECG: the model reads {read} (probability abnormal {e['prob']:.2f}); signal quality "
+         f"{_band(e['quality'])} ({e['quality']:.2f}), model uncertainty {e['uncertainty']:.2f}.")
+    if e["reliable"]:
+        return s + " Reliable enough to use as evidence."
+    why = ", ".join(e.get("reasons") or []) or "the ECG pipeline did not accept it"
+    then = "a repeat ECG was requested" if e.get("action", "repeat") == "repeat" else "left for clinician review"
+    return s + f" Not used as evidence ({why}); {then}."
+
+
+def summarize_mri(m, bands=None):
+    """The cardiac MRI report in one or two plain sentences, with the ejection fraction band."""
+    if not m:
+        return None
+    b = bands or LVEF_BANDS
+    ef = m.get("lvef")
+    if ef is None:
+        part = "no ejection fraction measured"
+    else:
+        band = ("reduced" if ef <= b["reduced_max"] else "mildly reduced" if ef <= b["mildly_reduced_max"]
+                else "preserved")
+        part = f"left ventricular ejection fraction {ef:.0f}% ({band})"
+    where = f" on a {m['scanner']} scanner" if m.get("scanner") else ""
+    unc = f", segmentation uncertainty {m['uncertainty']:.3f}" if m.get("uncertainty") is not None else ""
+    s = f"Cardiac MRI{where}: {part}{unc}."
+    if m["reliable"]:
+        s += " Accepted by the imaging checks."
+    else:
+        s += " Measurements need expert review (" + ", ".join(m.get("reasons") or m.get("flags") or []) + ")."
+    return s + "".join(f" {c.rstrip('.')}." for c in m.get("caveats") or [])
+
+
+def patient_evidence(decisions, reviews, bands=None):
+    """All ECG checks and MRI exams of one patient in a few lines (decisions = that patient's rows)."""
+    lines = []
+    if "ecg_checked" in decisions:
+        e = decisions[decisions.ecg_checked.fillna(False).astype(bool)]
+        if len(e):
+            ok = e.ecg_reliable.astype(bool)
+            ab = e[ok].ecg_abnormal.astype(bool).sum()
+            lines.append(f"ECG: {len(e)} recording(s) checked, {int(ok.sum())} reliable ({int(ab)} abnormal), "
+                         f"{int((~ok).sum())} not used as evidence.")
+    for r in reviews:
+        if r.get("mri"):
+            lines.append(f"Day {r['day']}: " + summarize_mri(r["mri"], bands))
+    return lines
+
+
+def render(review, followup=None, lvef_bands=None):
+    """The template review. followup: lines from watch.followup_status."""
     r = review
     lines = [f"**{r['severity'].upper()} - {r['kind']} review for {r['patient_id']} (day {r['day']})**",
              f"Context: {r['context']['age']} y, {r['context']['sex']}, {r['context']['remoteness']} community, "
@@ -76,37 +133,16 @@ def render(review):
         w = [t["weight_kg"] for t in r["trend"]]
         lines.append(f"Weight trend (last {len(w)} readings): {w[0]:.1f} -> {w[-1]:.1f} kg; "
                      f"latest BP {r['trend'][-1]['sbp']:.0f}, HR {r['trend'][-1]['hr']:.0f}.")
-    if r["ecg"]:
-        e = r["ecg"]
-        if e["reliable"]:
-            lines.append(f"ECG (quality {e['quality']:.2f}): {'abnormal' if e['abnormal'] else 'no abnormality'} "
-                         f"(model probability {e['prob']:.2f}).")
-    if r["mri"]:
-        m = r["mri"]
-        where = f" ({m['scanner']} scanner)" if m.get("scanner") else ""
-        unc = f", segmentation uncertainty {m['uncertainty']:.3f}" if m.get("uncertainty") is not None else ""
-        lines.append(f"Cardiac MRI{where}: LVEF {m['lvef']}%{unc}" + ("" if m["reliable"] else " (flagged)") + ".")
-    if r["caveats"]:
-        lines.append("Reliability caveats: " + "; ".join(r["caveats"]) + ".")
+    for s in (summarize_ecg(r["ecg"]), summarize_mri(r["mri"], lvef_bands)):
+        if s:
+            lines.append(s)
+    # the ECG / MRI summaries already state their own reliability; keep the other caveats
+    caveats = [c for c in r["caveats"] if not c.startswith(("ECG not used", "MRI measurements need"))
+               and c not in ((r["mri"] or {}).get("caveats") or [])]
+    if caveats:
+        lines.append("Reliability caveats: " + "; ".join(caveats) + ".")
+    if followup:
+        lines.append("Follow-up status: " + " ".join(followup))
     lines.append("Suggested next step: " + r["next_step"])
     lines.append("HeartSafe does not make the clinical decision; the clinical team does.")
     return "\n\n".join(lines)
-
-
-def llm_rewrite(review, model):
-    """Optional: reword the template for readability. Returns template text on any failure."""
-    text = render(review)
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return text, "template"
-    try:
-        import anthropic
-        msg = anthropic.Anthropic().messages.create(
-            model=model, max_tokens=500,
-            system=("You rewrite clinical monitoring summaries for nurses. Use ONLY the facts given. "
-                    "Do not add diagnoses, medications, numbers or recommendations that are not in the facts. "
-                    "Keep the suggested next step and the caveats. Under 150 words."),
-            messages=[{"role": "user", "content": "Facts (JSON):\n" + json.dumps(review, default=str)
-                       + "\n\nDraft:\n" + text}])
-        return msg.content[0].text, model
-    except Exception as e:  # network, key or package problems fall back to the template
-        return text + f"\n\n_(LLM unavailable: {type(e).__name__}; template shown)_", "template"

@@ -14,8 +14,9 @@ The clinical team makes every decision.
    `{prediction, probability, uncertainty, quality, shift_score, metadata, flags, suggested_action}`.
 3. **Reliability checks.** Each input and model output is checked (data quality, signal or image quality,
    uncertainty, device or scanner shift, plausibility) and ends in accept / repeat measurement / escalate.
-4. **Explainable review.** Every escalation gets a structured review; an LLM can write the wording,
-   with a template fallback.
+4. **Explainable review.** Every escalation gets a structured template review with plain-language ECG and
+   MRI report summaries and its follow-up status, which a follow-up watch re-checks every 2 hours. An
+   LLM-written version is optional future work.
 5. **Tracked follow-up.** Cases go created → acknowledged → reviewed → resolved, with deadlines, reminders and an
    audit log. Only a clinician moves or closes a case. Then the **patient loop** follows the clinician's
    instruction to the patient: confirmed → action done → readings checked, contacting a caregiver or

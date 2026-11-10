@@ -121,8 +121,9 @@ heartsafe/simulate.py  simulated cohort modelled on Medly (+ scripted demo patie
 heartsafe/monitoring.py  platform adapter and alert rules (modelled on Medly)
 heartsafe/reliability.py  reading, ECG and MRI reliability checks
 heartsafe/signals.py   ECG quality index; loaders for ECG / imaging pipeline outputs
-heartsafe/review.py    explainable review (template)
-heartsafe/orchestrator.py  Claude tool-calling review writer with template fallback
+heartsafe/review.py    explainable review (template), ECG and MRI report summaries
+heartsafe/watch.py     follow-up watch: checks every case and patient loop every few hours
+heartsafe/orchestrator.py  optional Claude review writer (future work, off by default)
 heartsafe/tracker.py   SQLite case tracker with audit log and permissions
 heartsafe/clinicians.py  assumed clinician response model
 heartsafe/agent.py     the agent and the platform-alone baseline
@@ -132,9 +133,30 @@ heartsafe/run.py       command line entry point
 app.py                 Streamlit dashboard
 ```
 
-## LLM agent (optional)
+## Reviews and follow-up watch (no LLM needed)
 
-Set `ANTHROPIC_API_KEY` and press "Explain with AI agent" on a case. Claude
+Every case review is written from templates: why it was flagged, symptoms, the trend, a
+plain-language summary of the ECG and MRI reports (what the model read, signal or image
+quality, uncertainty, whether it was used as evidence, the ejection-fraction band), the
+reliability caveats, the follow-up status and the suggested next step.
+
+The follow-up watch (`heartsafe/watch.py`) checks every case and patient loop every
+`followup.watch_every_h` hours (2 by default): missed acknowledgement or resolution
+deadlines, reminders sent, and whether the patient side confirmed and acted. The dashboard's
+clinician queue shows it and re-runs it on that interval. From the command line:
+
+```
+python -m heartsafe.watch                 # one check, report only
+python -m heartsafe.watch --act --loop    # live: check every 2 h, remind the nurse or contact the next helper
+```
+
+It only reminds and contacts; acknowledging, resolving and confirming stay with people.
+
+## LLM agent (optional, future work)
+
+Off by default: the template review covers the same facts. To try it, set
+`review.llm_enabled: true` in `config.yaml` and `ANTHROPIC_API_KEY`, then press "Explain with
+AI agent" on a case (`python llm_check.py` tests 5 cases). Claude
 (`review.llm_model` in `config.yaml`) calls read-only tools over the case (facts, data
 quality, ECG, MRI, follow-up status) and writes the review through `submit_review`
 (`heartsafe/orchestrator.py`). It explains; severity, actions and deadlines stay with the
