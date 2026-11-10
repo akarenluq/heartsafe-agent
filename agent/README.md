@@ -73,10 +73,25 @@ rate below 45 or above 120, oxygen saturation below 90%, chest pain, fainting, p
 3.0-6.0 mmol/L, or breathlessness together with a weight-gain rule. BP and heart-rate limits are
 defaults; the clinician can set a patient's own limits at enrollment.
 
+**Emergency** (HeartSafe level, above critical; cardiologist review, Nov 2026): chest pain or fainting
+**and** a reliable abnormal ECG at the same time. The patient is told at once: "If you feel worse, call
+911." A clinician must start a video call within 15 minutes (not 4 hours) and records "call 911" or
+"cancel the alarm" with a reason (`tracker.emergency_decision`). HeartSafe never calls 911 itself.
+Chest pain or fainting without an abnormal ECG stays critical. If the ECG is not usable, a repeat
+recording is asked for straight away.
+
+## ECG recordings
+
+Every ECG the patient records is checked, not only those on alert days (`ecg_protocol` in
+`config.yaml`: weekly, on symptom days, and when the agent asks on alert days). A recording that is
+not usable (disconnected, noisy, low quality) gets "please record it again"; a reliable abnormal
+recording with no alert is added to the chart for the next review; a normal one is logged.
+
 ## What the agent does with each platform alert
 
 | Check | Example | Action |
 |---|---|---|
+| Chest pain or fainting with a reliable abnormal ECG | | **emergency**: message to the patient now, video call within 15 min, clinician decides 911 or cancel |
 | Implausible value, weight in lb, BP cuff artifact | 154 kg after 70 kg | ask for a repeat, no case |
 | Overnight weight jump with no symptoms | +2.6 kg, stable HR | ask for a repeat; if it persists, a nurse calls to verify a new scale. Weight-only alerts wait in that case; symptoms or any other rule escalate at once |
 | Nurse confirms a new scale | | readings re-baselined |
@@ -102,7 +117,7 @@ After a clinician resolves a clinical case, HeartSafe follows the instruction to
    contacts their caregiver, or the community health worker if there is none, then the community
    health worker.
 3. **Action done.** If the action is not recorded in time, HeartSafe reminds whoever confirmed.
-4. **Readings checked** 72 h after the action: improved -> loop closed; not improved -> a clinical
+4. **Readings checked** 24 h after the action: improved -> loop closed; not improved -> a clinical
    case is reopened.
 
 Only the patient, a caregiver or a community health worker can record a confirmation or an action;

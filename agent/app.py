@@ -39,7 +39,7 @@ h3 {font-size: 1.15rem !important; margin-top: 0.6rem !important;}
 .hs-sub {color: #52514e; font-size: 0.98rem; margin: 0.15rem 0 1.2rem;}
 .hs-badge {display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 0.78rem;
   font-weight: 600; margin: 0 6px 4px 0; border: 1px solid rgba(11,11,11,0.10); white-space: nowrap;}
-.hs-critical {background: #d03b3b; color: #fff;} .hs-caution {background: #fab219; color: #0b0b0b;}
+.hs-emergency {background: #7a0f0f; color: #fff;} .hs-critical {background: #d03b3b; color: #fff;} .hs-caution {background: #fab219; color: #0b0b0b;}
 .hs-low, .hs-neutral {background: #f0efec; color: #0b0b0b;} .hs-good {background: #0ca30c; color: #fff;}
 .hs-blue {background: #e6f0fb; color: #184f95; border-color: #cde2fb;}
 .hs-label {color: #898781; font-size: 0.74rem; font-weight: 600; text-transform: uppercase;
@@ -74,8 +74,8 @@ section[data-testid="stSidebar"] {width: 260px !important;}
   padding-top: 0.5rem; margin-top: 0.2rem;}
 </style>""", unsafe_allow_html=True)
 
-SEV_LABEL = {"critical": "🔴 Critical", "caution": "🟡 Caution", "low": "⚪ Low"}
-SEV_ORDER = {"critical": 0, "caution": 1, "low": 2}
+SEV_LABEL = {"emergency": "🚨 Emergency", "critical": "🔴 Critical", "caution": "🟡 Caution", "low": "⚪ Low"}
+SEV_ORDER = {"emergency": -1, "critical": 0, "caution": 1, "low": 2}
 KIND_LABEL = {"clinical": "Clinical", "outreach": "Missed readings", "scale_check": "Scale check",
               "imaging": "MRI review", "patient_followup": "Patient follow-up"}
 STATE_LABEL = {"created": "Waiting for acknowledgement", "acknowledged": "Acknowledged", "reviewed": "Reviewed",
@@ -94,6 +94,11 @@ DECISION = {  # what HeartSafe did with a platform alert: (plain words, group fo
     "scale_verified": ("Nurse confirmed a new scale; re-baselined", "Data issue handled"),
     "imaging_review": ("MRI result sent for expert review", "Escalated to the care team"),
     "imaging_accept": ("MRI result accepted", "Follow-up and patient loop"),
+    "emergency": ("EMERGENCY: chest pain or fainting with an abnormal ECG; video call within 15 min",
+                  "Escalated to the care team"),
+    "ecg_ok": ("ECG checked: no abnormality", "ECG checked"),
+    "ecg_repeat": ("ECG not usable: patient asked to record it again", "Data issue handled"),
+    "ecg_noted": ("Abnormal ECG with no alert: added to the chart", "ECG checked"),
 }
 GROUPS = alt.Scale(domain=["Escalated to the care team", "Data issue handled", "Follow-up and patient loop"],
                    range=[BLUE, ORANGE, AQUA])
@@ -102,7 +107,8 @@ AUDIT_LABEL = {"create": "Case created", "evidence": "Evidence added", "reminder
                "severity_up": "Severity raised", "patient_notified": "Instruction sent to the patient",
                "patient_contact": "Helper contacted", "patient_confirm": "Instruction confirmed",
                "patient_action_done": "Action done", "loop_closed": "Loop closed: readings improved",
-               "loop_reopened": "Reopened", "llm_review": "AI review written"}
+               "loop_reopened": "Reopened", "llm_review": "AI review written",
+               "patient_message": "Message sent to the patient", "emergency_decision": "Video call decision"}
 ISSUE_LABEL = {"ack_overdue": "Acknowledgement overdue", "resolve_overdue": "Resolution overdue",
                "patient_not_confirmed": "Patient has not confirmed the instruction"}
 
@@ -240,6 +246,15 @@ def show_case(case):
                 + f'<span style="color:#898781;font-size:0.85rem">Case {case["case_id"]} · {case["patient_id"]} · '
                   f'opened {day(case["created_h"])}</span>', unsafe_allow_html=True)
 
+    if sev == "emergency":
+        call = case["acknowledged_h"]
+        st.error("**Emergency**: chest pain or fainting with a reliable abnormal ECG. The patient was told "
+                 "\"If you feel worse, call 911.\"  \n"
+                 + (f"Video call started after {60 * (call - case['created_h']):.0f} min.  \n" if call else
+                    "Waiting for the clinician's video call (15-minute deadline).  \n")
+                 + (f"Decision: {case['outcome']}" if case["outcome"] else
+                    "Decision pending: the clinician records call 911 or cancel the alarm, with a reason. "
+                    "HeartSafe never calls 911 itself."))
     t_review, t_follow, t_audit = st.tabs(["Review", "Follow-up", "Audit log"])
     with t_review:
         left, right = st.columns([3, 2], gap="large")
@@ -333,7 +348,8 @@ def page_queue():
     found = watch_now(now)
     c = st.columns(4)
     c[0].metric("Open cases", len(open_))
-    c[1].metric("Critical", int((open_.severity == "critical").sum()))
+    c[1].metric("Emergency / critical", f"{int((open_.severity == 'emergency').sum())} / "
+                                        f"{int((open_.severity == 'critical').sum())}")
     c[2].metric("Acknowledgement overdue", int(open_.overdue.sum()))
     c[3].metric("Need a follow-up action", len(found), help=f"From the follow-up watch, every {EVERY_H:g} h")
 
@@ -361,7 +377,7 @@ def page_queue():
     followup_watch()
 
     f1, f2 = st.columns(2)
-    sev = f1.multiselect("Severity", ["critical", "caution", "low"], format_func=lambda s: SEV_LABEL[s])
+    sev = f1.multiselect("Severity", ["emergency", "critical", "caution", "low"], format_func=lambda s: SEV_LABEL[s])
     kind = f2.multiselect("Type", sorted(open_.kind.unique()), format_func=lambda k: KIND_LABEL.get(k, k))
     view = open_[open_.severity.isin(sev or SEV_ORDER) & open_.kind.isin(kind or open_.kind.unique())]
     view = view.assign(rank=view.severity.map(SEV_ORDER)).sort_values(["overdue", "rank", "created_h"],
@@ -428,7 +444,7 @@ def page_patient():
 
     st.subheader(f"Cases ({len(pcases)})")
     for case in pcases:
-        icon = {"critical": "🔴", "caution": "🟡", "low": "⚪"}[case["severity"]]
+        icon = {"emergency": "🚨", "critical": "🔴", "caution": "🟡", "low": "⚪"}[case["severity"]]
         with st.expander(f"{icon} Case {case['case_id']} · {KIND_LABEL.get(case['kind'], case['kind'])} · "
                          f"{case['severity']} · {day(case['created_h'])} · {STATE_LABEL[case['state']].lower()}"):
             show_case(case)

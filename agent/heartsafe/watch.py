@@ -20,7 +20,7 @@ from . import DATA, load_config
 from .tracker import Tracker
 
 HELPERS = ["caregiver", "community_health_worker"]
-RANK = {"critical": 0, "caution": 1, "low": 2}
+RANK = {"emergency": -1, "critical": 0, "caution": 1, "low": 2}
 
 
 def _h(x):

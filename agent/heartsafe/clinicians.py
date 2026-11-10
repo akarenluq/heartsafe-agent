@@ -19,7 +19,9 @@ def followup_times(severity, remoteness, ack_window_h, resolve_window_h, cfg, rn
     c = cfg["clinicians"]
     natural = _lognormal(rng, c["median_ack_h"][severity][remoteness], c["ack_sigma"])
     forgot = force_forget or rng.random() < c["forget_prob"]
-    resp = lambda: float(rng.exponential(c["response_after_reminder_h"]))  # noqa: E731
+    after = c.get("emergency_response_after_reminder_h", c["response_after_reminder_h"]) \
+        if severity == "emergency" else c["response_after_reminder_h"]
+    resp = lambda: float(rng.exponential(after))  # noqa: E731
     sent = []
     if not reminders:
         if forgot:
