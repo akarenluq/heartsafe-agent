@@ -11,6 +11,11 @@ improved) or reopened (they did not, or the action was not done). Only the patie
 their caregiver or a community health worker can record a confirmation or an action;
 the agent sends the instruction, contacts helpers, checks the readings afterwards and
 reopens a clinical case when needed. It never closes a clinical case.
+
+Emergency cases (chest pain or fainting with a reliable abnormal ECG): the agent sends the
+patient "If you feel worse, call 911." and opens the case; a clinician starts a video call
+(acknowledge) and records the decision, "call_911" or "cancel", with a reason. The agent
+has no way to call 911 or to record that decision.
 """
 import json
 import sqlite3
@@ -18,6 +23,7 @@ import sqlite3
 STATES = ["created", "acknowledged", "reviewed", "resolved"]
 LOOP_STATES = ["notified", "confirmed", "action_done", "closed", "reopened"]
 PATIENT_SIDE = {"patient", "caregiver", "community_health_worker"}
+EMERGENCY_DECISIONS = {"call_911": "Video call: clinician called 911", "cancel": "Video call: alarm cancelled"}
 CLINICIAN_ACTIONS = {"acknowledge": ("created", "acknowledged"),
                      "review": ("acknowledged", "reviewed"),
                      "resolve": ("reviewed", "resolved")}
@@ -94,6 +100,28 @@ class Tracker:
         if action == "resolve":
             self.db.execute("UPDATE cases SET outcome=? WHERE case_id=?", (note, case_id))
         self._log(case_id, t, actor, role, action, {"note": note} if note else None)
+
+    def notify_patient(self, case_id, t, text):
+        """A message the agent sends the patient straight away (no clinical decision in it)."""
+        self._log(case_id, t, "heartsafe", "agent", "patient_message", {"text": text})
+
+    def emergency_decision(self, case_id, t, actor, role, decision, reason):
+        """After the video call the clinician records call 911 or cancel the alarm, with a reason."""
+        if role != "clinician":
+            raise PermissionDenied("only a clinician can decide to call 911 or cancel the alarm")
+        if decision not in EMERGENCY_DECISIONS:
+            raise ValueError(f"decision must be one of {sorted(EMERGENCY_DECISIONS)}")
+        if not (reason or "").strip():
+            raise ValueError("a reason is required")
+        case = self.get(case_id)
+        if case["severity"] != "emergency":
+            raise ValueError(f"case {case_id} is not an emergency")
+        if case["state"] not in ("acknowledged", "reviewed"):
+            raise ValueError(f"case {case_id} is {case['state']}: start the video call (acknowledge) first")
+        outcome = f"{EMERGENCY_DECISIONS[decision]}. Reason: {reason}"
+        self.db.execute("UPDATE cases SET state='resolved', resolved_h=?, outcome=? WHERE case_id=?",
+                        (t, outcome, case_id))
+        self._log(case_id, t, actor, role, "emergency_decision", {"decision": decision, "reason": reason})
 
     # ---- patient loop ------------------------------------------------------
     def start_loop(self, case_id, t, instruction, confirm_deadline_h):

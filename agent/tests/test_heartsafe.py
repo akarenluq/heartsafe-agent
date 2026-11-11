@@ -177,6 +177,77 @@ def test_patient_loop_only_patient_side_confirms():
                                                           "loop_closed"]
 
 
+def test_emergency_only_a_clinician_decides():
+    tr = Tracker()
+    cid = tr.create("P1", "clinical", "emergency", 10, 0.25, 1, {"x": 1})
+    tr.notify_patient(cid, 10, "If you feel worse, call 911.")
+    with pytest.raises(ValueError):
+        tr.emergency_decision(cid, 10.1, "n", "clinician", "cancel", "settled")   # video call not started
+    tr.act(cid, "acknowledge", 10.1, "n", "clinician", note="video call started")
+    with pytest.raises(PermissionDenied):
+        tr.emergency_decision(cid, 10.2, "heartsafe", "agent", "call_911", "x")  # the agent never calls 911
+    with pytest.raises(ValueError):
+        tr.emergency_decision(cid, 10.2, "n", "clinician", "call_911", " ")      # reason required
+    with pytest.raises(ValueError):
+        tr.emergency_decision(cid, 10.2, "n", "clinician", "ambulance", "x")     # only call_911 / cancel
+    tr.emergency_decision(cid, 10.3, "n", "clinician", "call_911", "pain ongoing on video")
+    c = tr.get(cid)
+    assert c["state"] == "resolved" and c["outcome"].startswith("Video call: clinician called 911")
+    assert [a["action"] for a in tr.audit(cid)] == ["create", "patient_message", "acknowledge", "emergency_decision"]
+
+
+def _one_patient(symptom_day=9, symptom="chest_pain", n_days=12):
+    patients, feed = simulate_cohort(CFG, n_patients=1, n_days=n_days, seed=11, demo=False)
+    patients["ecg_kit"] = True
+    feed = feed.assign(submitted=True, weight_kg=70.0, sbp=120, dbp=75, hr=70, spo2=97.0, diuretic_taken=True,
+                       potassium=np.nan, creatinine_umol=np.nan, gt_episode=False, gt_fault="none")
+    for c in ("sob", "swelling", "orthopnea", "pnd", "chest_pain", "syncope"):
+        feed[c] = False
+    feed.loc[feed.day == symptom_day, symptom] = True
+    return patients, platform_levels(feed, CFG["alert_rules"], patients)
+
+
+def _run_with_ecg(patients, feed, reliable, abnormal):
+    tr = Tracker()
+    agent = HeartSafeAgent(CFG, patients, tr, np.random.default_rng(0), 30 * 24.0)
+    ecg = {"reliable": reliable, "action": "accept" if reliable else "repeat", "abnormal": abnormal,
+           "prob": 0.9 if abnormal else 0.1, "quality": 0.9 if reliable else 0.2, "uncertainty": 0.1,
+           "reasons": [] if reliable else ["low signal quality"]}
+    agent._read_ecg = lambda p, row: (dict(ecg), {"ecg_checked": True, "ecg_reliable": reliable,
+                                                  "ecg_abnormal": abnormal})
+    return agent.run(PlatformAdapter(feed).observable()), tr
+
+
+@pytest.mark.parametrize("symptom", ["chest_pain", "syncope"])
+def test_emergency_needs_symptom_and_reliable_abnormal_ecg(symptom):
+    patients, feed = _one_patient(symptom=symptom)
+    dec, tr = _run_with_ecg(patients, feed, reliable=True, abnormal=True)
+    em = dec[dec.decision == "emergency"]
+    assert em.day.tolist() == [9]
+    case = tr.get(int(em.case_id.iloc[0]))
+    assert case["severity"] == "emergency" and case["ack_deadline_h"] - case["created_h"] == pytest.approx(0.25)
+    log = tr.audit(case["case_id"])
+    assert log[1]["action"] == "patient_message" and "call 911" in log[1]["detail"]
+    assert log[1]["t_h"] == case["created_h"]                       # the patient is told straight away
+    assert case["state"] == "resolved" and case["outcome"].startswith("Video call:")
+    assert all(a["role"] in ("agent", "clinician") and (a["action"] != "emergency_decision" or
+                                                       a["role"] == "clinician") for a in log)
+    # the same symptom without an abnormal ECG, or with an ECG that is not reliable, stays critical
+    for reliable, abnormal in ((True, False), (False, True)):
+        dec, tr = _run_with_ecg(patients, feed, reliable, abnormal)
+        assert "emergency" not in dec.decision.values
+        assert dec[dec.day == 9].severity.tolist() == ["critical"]
+
+
+def test_every_ecg_recording_is_checked():
+    patients, feed = _one_patient(symptom_day=99)                   # no symptoms, no alerts
+    dec, _ = _run_with_ecg(patients, feed, reliable=True, abnormal=False)
+    assert dec[dec.decision == "ecg_ok"].day.tolist() == [0, 7]     # weekly routine recordings
+    dec, _ = _run_with_ecg(patients, feed, reliable=False, abnormal=False)
+    assert dec[dec.decision == "ecg_repeat"].day.tolist() == [0, 7]  # a disconnected ECG -> record again
+    assert CFG["patient_loop"]["outcome_check_after_h"] == 24
+
+
 @pytest.fixture(scope="module")
 def small_run():
     patients, feed = simulate_cohort(CFG, n_patients=150, n_days=60, seed=3)
@@ -213,9 +284,12 @@ def test_demo_patient_story(small_run):
     loops = small_run_loops[0]
     first = loops[loops.patient_id == "DEMO-MARY"].iloc[0]           # Mary misses the message (remote):
     assert first.contacts >= 1 and first.confirmed_by in ("caregiver", "community_health_worker")
-    # one plan, followed, and her readings recover: alerts during the plan wait for the outcome check
-    assert len(loops[loops.patient_id == "DEMO-MARY"]) == 1 and first.outcome == "readings improved after the action"
-    assert "loop_update" in days(51, 55).values and "loop_reopened" not in mary.values
+    # her plan is followed and her readings are checked 24 h after the action (cardiologist review);
+    # when symptoms come back after that check, a new case opens straight away
+    ml = loops[loops.patient_id == "DEMO-MARY"]
+    assert (ml.outcome == "readings improved after the action").all() and "loop_reopened" not in mary.values
+    assert 24 <= first.closed_h - first.action_done_h < 48
+    assert days(53, 55).isin(["escalate", "escalate_update"]).any()
 
 
 def test_reopenings_follow_real_episodes(small_run):

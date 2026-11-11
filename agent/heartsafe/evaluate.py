@@ -92,6 +92,39 @@ def model_evidence(decisions):
     return out
 
 
+def emergencies(decisions, cases, ep_idx):
+    """Emergency level: chest pain or fainting with a reliable abnormal ECG. Minutes to the
+    clinician's video call, and what the clinician decided (call 911 or cancel the alarm)."""
+    e = cases[cases.severity == "emergency"]
+    if not len(e):
+        return {"cases": 0}
+    mins = (e.acknowledged_h - e.created_h) * 60
+    d = decisions[decisions.decision == "emergency"]
+    true_ep = [_in_episode(ep_idx, r.patient_id, int(r.day), before=0, after=0) for r in d.itertuples()]
+    return {"cases": int(len(e)),
+            "median_minutes_to_video_call": round(float(mins.median()), 1) if mins.notna().any() else None,
+            "video_call_within_15_min": round(float((mins <= 15).mean()), 3),
+            "video_call_within_30_min": round(float((mins <= 30).mean()), 3),
+            "reminders_sent": int(e.reminders.sum()),
+            "decisions": d.emergency_decision.fillna("pending").value_counts().to_dict()
+            if "emergency_decision" in d else {},
+            "during_true_episode": round(float(np.mean(true_ep)), 3) if len(true_ep) else None,
+            "chest_pain_or_fainting_kept_critical": int(((decisions.decision.isin(["escalate", "escalate_update"]))
+                                                         & decisions.alert_rules.fillna("").str.contains(
+                                                             "chest pain|fainting")).sum())}
+
+
+def ecg_recordings(decisions):
+    """Every ECG recording is checked, with or without a platform alert."""
+    if "ecg_checked" not in decisions:
+        return {}
+    e = decisions[decisions.ecg_checked.fillna(False).astype(bool)]
+    no_alert = e[e.decision.isin(["ecg_ok", "ecg_repeat", "ecg_noted"])]
+    return {"recordings_checked": int(len(e)), "on_days_without_alert": int(len(no_alert)),
+            "repeat_requested_without_alert": int((no_alert.decision == "ecg_repeat").sum()),
+            "abnormal_noted_without_alert": int((no_alert.decision == "ecg_noted").sum())}
+
+
 def patient_loop(loops, patients, horizon_h):
     """After the clinician's decision: did the patient confirm, act, and did readings improve?
     Platform alone = one message and no tracking: completed only if the patient reads it and acts
@@ -135,7 +168,7 @@ def evaluate(feed, patients, decisions, cases, baseline, horizon_h, rules=None, 
 
     # Episode-level: did a clinician acknowledge, and how fast after the platform's first alert?
     rows = []
-    esc = decisions[decisions.decision.isin(["escalate", "escalate_update"])]
+    esc = decisions[decisions.decision.isin(["escalate", "escalate_update", "emergency"])]
     for e in eps.itertuples():
         d = esc[(esc.patient_id == e.patient_id) & (esc.day >= e.start - 1) & (esc.day <= e.end)]
         ack_a = clinical[clinical.case_id.isin(d.case_id)].acknowledged_h.min() if len(d) else np.nan
@@ -205,6 +238,8 @@ def evaluate(feed, patients, decisions, cases, baseline, horizon_h, rules=None, 
         "resolution": resolution(clinical, baseline, horizon_h, followup_cfg),
         "stalled_cases": stalled(clinical, baseline),
         "model_evidence": model_evidence(decisions),
+        "emergencies": emergencies(decisions, cases, ep_idx),
+        "ecg_recordings": ecg_recordings(decisions),
         "patient_loop": patient_loop(loops, patients, horizon_h),
         "followup": {
             "cases": int(len(cases)), "reminders_sent": int(cases.reminders.sum()),

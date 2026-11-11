@@ -10,6 +10,9 @@ from .monitoring import SYMPTOM_TEXT, SYMPTOMS
 LVEF_BANDS = {"reduced_max": 40, "mildly_reduced_max": 49}  # % (universal definition of heart failure)
 
 NEXT_STEP = {
+    "emergency": ("Start a video call with the patient within {ack} minutes, then record your decision: "
+                  "call 911 or cancel the alarm, with a reason. HeartSafe has already told the patient: "
+                  "\"If you feel worse, call 911.\" HeartSafe never calls 911 itself."),
     "critical": ("Contact the patient within {ack} hours and assess per the heart-failure program protocol. "
                  "If oxygen saturation, heart rate or blood pressure have changed, consider transfer for "
                  "assessment and an echocardiogram."),

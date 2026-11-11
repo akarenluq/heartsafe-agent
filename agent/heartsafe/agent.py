@@ -7,6 +7,10 @@ opens or updates a tracked case. Missed readings create outreach tasks. After a
 clinician resolves a clinical case, the patient loop follows the instruction to the
 patient: confirmation, action (with caregiver or community health worker follow-up)
 and a check of the readings afterwards, reopening a case if they did not improve.
+Every ECG the patient records is checked, not only those on alert days. Chest pain or
+fainting together with a reliable abnormal ECG is an emergency: the patient is told at once
+"If you feel worse, call 911." and a clinician must start a video call within 15 minutes and
+record "call 911" or "cancel the alarm" with a reason. The agent never calls 911 itself.
 The clinical decision always stays with the clinical team.
 
 `run_baseline` is the comparison: the monitoring platform alone, every alert goes to the nurse
@@ -18,13 +22,13 @@ import numpy as np
 import pandas as pd
 
 from .clinicians import followup_times, patient_response
-from .monitoring import OPTIONAL, SYMPTOMS, patient_limits, rule_levels
+from .monitoring import OPTIONAL, SYMPTOM_TEXT, SYMPTOMS, patient_limits, rule_levels
 from .reliability import assess_ecg, assess_mri, assess_reading
 from .review import build_review
 from .signals import ecg_output, mri_output
 
 SEV = {1: "caution", 2: "critical"}
-RANK = {"low": 0, "caution": 1, "critical": 2}
+RANK = {"low": 0, "caution": 1, "critical": 2, "emergency": 3}
 INSTRUCTION = {"critical": "Follow the care team's urgent plan (assessment visit or transfer) and confirm when done.",
                "caution": "Follow the care team's plan (e.g. medication change), confirm, and keep daily readings."}
 DATA_FAULTS = {"implausible_weight", "implausible_bp", "implausible_hr", "implausible_spo2", "unit_error",
@@ -248,6 +252,82 @@ class HeartSafeAgent:
                                        trigger=(1, ["weight +0 kg in 7 days"]))  # a weight-gain case
             self._record(row, "escalate", severity="caution", case_id=cid, flags="scale_check_rejected")
 
+    # ---- ECG: every recording is checked ----------------------------------
+    def _ecg_recorded(self, p, row):
+        """Did the patient record an ECG today? From the platform feed when it says so, otherwise the
+        recording protocol in config.yaml (weekly, on symptom days, and when the agent asks on alert days)."""
+        if not p.get("ecg_kit"):
+            return False
+        rec = getattr(row, "ecg_recorded", None)
+        if rec is not None and not pd.isna(rec):
+            return bool(rec)
+        pr = self.cfg.get("ecg_protocol", {})
+        every = pr.get("routine_every_days")
+        return bool((every and row.day % every == 0)
+                    or (pr.get("on_symptoms", True) and any(bool(getattr(row, s, False)) for s in SYMPTOMS))
+                    or (pr.get("on_alert", True) and row.alert_level > 0))
+
+    def _read_ecg(self, p, row):
+        truth = self._truth.get((p["patient_id"], row.day), False)
+        out, gt = ecg_output(p, truth, self.cfg, self.rng, self.ecg_pool,
+                             demo=p["patient_id"] == "DEMO-MARY" and truth)
+        ecg = assess_ecg(out, self.cfg)
+        return ecg, {"ecg_checked": True, "ecg_reliable": ecg["reliable"], "ecg_action": ecg["action"],
+                     "ecg_abnormal": ecg["abnormal"], "gt_ecg_fault": gt.get("fault", "none")}
+
+    def _ecg_without_alert(self, st, row, now, ecg, log):
+        """A recording on a day with no platform alert (routine or symptom day)."""
+        if not ecg["reliable"]:
+            return self._record(row, "ecg_repeat", flags="ecg_unreliable",
+                                notes="ECG not usable (" + ", ".join(ecg["reasons"]) + "); patient asked to "
+                                      "record it again", **log)
+        if ecg["abnormal"]:
+            open_id = self._open_case(st, now)
+            if open_id:
+                self.tr.add_evidence(open_id, now, {"day": row.day, "ecg": "reliable abnormal recording"})
+            return self._record(row, "ecg_noted", case_id=open_id, flags="ecg_abnormal_no_alert",
+                                notes="reliable abnormal ECG with no alert: added to the chart for the next "
+                                      "review", **log)
+        return self._record(row, "ecg_ok", **log)
+
+    # ---- emergency -------------------------------------------------------
+    def _emergency(self, p, st, row, today, now, em, ecg, ecg_log, flags, notes):
+        """Open an emergency case, message the patient at once, and wait for the clinician's video call."""
+        E, cfg = self.cfg["emergency"], self.cfg
+        fired = [SYMPTOM_TEXT[s] for s in em] + ["reliable abnormal ECG at the same time"]
+        ack_h = self._ack_window(p, "emergency")
+        res_h = cfg["followup"]["resolve_deadline_h"]["emergency"]
+        review = build_review(p, row.day, fired, st.hist, today, "emergency", flags, notes, ecg=ecg,
+                              ack_h=f"{ack_h * 60:g}")
+        cid = self.tr.create(p["patient_id"], "clinical", "emergency", now, ack_h, res_h, review)
+        self.tr.notify_patient(cid, now, E["patient_message"])
+        open_id = self._open_case(st, now)
+        if open_id:
+            self.tr.add_evidence(open_id, now, {"day": row.day, "emergency_case": cid})
+
+        f = followup_times("emergency", p["remoteness"], ack_h, res_h, cfg, self.rng, reminders=True)
+        self.gt_cases.append({"case_id": cid, "gt_stalled": bool(f.get("forgot"))})
+        for t, to in f["reminders"]:
+            if now + t <= self.horizon:
+                self.tr.remind(cid, now + t, to)
+        who = "nurse_backup" if any(to == "backup" for _, to in f["reminders"]) else "nurse_primary"
+        # Simulated clinician decision (simulation only; in a deployment the clinician records it).
+        if self._truth.get((p["patient_id"], row.day), False):
+            decision, reason = "call_911", "symptoms ongoing on the video call with an abnormal ECG"
+        else:
+            decision, reason = "cancel", ("symptoms settled on the video call; ECG matches the known baseline; "
+                                          "review at the next clinic contact")
+        resolved_h, made = None, None
+        if now + f["ack"] <= self.horizon:
+            self.tr.act(cid, "acknowledge", now + f["ack"], who, "clinician", note="video call started")
+            if now + f["resolve"] <= self.horizon:
+                self.tr.emergency_decision(cid, now + f["resolve"], who, "clinician", decision, reason)
+                resolved_h, made = now + f["resolve"], decision
+        st.case_id, st.case_resolved_h = cid, resolved_h
+        return self._record(row, "emergency", severity="emergency", case_id=cid,
+                            flags=";".join(flags + ["emergency"]), emergency_decision=made,
+                            notes="patient told: " + E["patient_message"], **ecg_log)
+
     # ---- main loop -----------------------------------------------------
     def run(self, feed):
         r = self.cfg["reliability"]
@@ -268,15 +348,32 @@ class HeartSafeAgent:
                 st.missed = 0
                 today = self._today(row, st.offset)
                 self._check_loops(p, st, row, now, today)
+                ecg = self._read_ecg(p, row) if self._ecg_recorded(p, row) else None
                 if row.alert_level > 0:
-                    self._handle_alert(p, st, row, today, now)
+                    self._handle_alert(p, st, row, today, now, ecg)
+                elif ecg is not None:
+                    self._ecg_without_alert(st, row, now, *ecg)
                 st.hist.append({k: today[k] for k in HIST_KEYS})
                 st.hist = st.hist[-14:]
         return pd.DataFrame(self.decisions)
 
-    def _handle_alert(self, p, st, row, today, now):
+    def _handle_alert(self, p, st, row, today, now, ecg_read=None):
         r = self.cfg["reliability"]
         flags, notes = assess_reading(st.hist, today, self.cfg, 0.0)
+        ecg, ecg_log = ecg_read if ecg_read else (None, {})
+
+        # 0. emergency: chest pain or fainting AND a reliable abnormal ECG at the same time. Checked
+        #    before anything else, so a weight or cuff problem never delays it.
+        em = [s for s in self.cfg["emergency"]["symptoms"] if today.get(s)]
+        if em and ecg is not None:
+            if not ecg["reliable"]:  # ask for a repeat recording straight away
+                ecg2, log2 = self._read_ecg(p, row)
+                ecg_log = {**ecg_log, "ecg_repeated": True}
+                if ecg2["reliable"]:
+                    ecg, ecg_log = ecg2, {**log2, "ecg_repeated": True}
+            if ecg["reliable"] and ecg["abnormal"]:
+                return self._emergency(p, st, row, today, now, em, ecg, ecg_log, flags, notes)
+        # without a reliable abnormal ECG, chest pain or fainting stays critical (platform rule)
 
         # 1. one-off measurement faults -> ask for a repeat, no case
         if DATA_FAULTS & set(flags):
@@ -321,17 +418,9 @@ class HeartSafeAgent:
             return self._record(row, "filtered", flags=";".join(flags) or "corrected_data_normal",
                                 notes=" | ".join(notes) or "alert not supported after data-quality correction")
 
-        # 4. evidence from the ECG device, if the patient has one
-        ecg, ecg_log = None, {}
-        if p["ecg_kit"]:
-            truth = self._truth.get((p["patient_id"], row.day), False)
-            out, gt = ecg_output(p, truth, self.cfg, self.rng, self.ecg_pool,
-                                 demo=p["patient_id"] == "DEMO-MARY" and truth)
-            ecg = assess_ecg(out, self.cfg)
-            ecg_log = {"ecg_checked": True, "ecg_reliable": ecg["reliable"], "ecg_action": ecg["action"],
-                       "ecg_abnormal": ecg["abnormal"], "gt_ecg_fault": gt.get("fault", "none")}
-            if not ecg["reliable"]:
-                flags.append("ecg_unreliable")
+        # 4. evidence from today's ECG recording, if the patient has a device (read in run())
+        if ecg is not None and not ecg["reliable"]:
+            flags.append("ecg_unreliable")
         severity = SEV[level]
         if severity == "caution" and ecg and ecg["reliable"] and ecg["abnormal"] and symptoms:
             severity = "critical"

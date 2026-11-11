@@ -103,9 +103,24 @@ reliability:
   ecg_max_uncertainty: 0.35
   ecg_abnormal_prob: 0.5
 
+# When patients with an ECG device record one. Every recording is checked (quality first),
+# not only those on alert days. Reviewed with cardiologists (Nov 2026).
+ecg_protocol:
+  routine_every_days: 7              # a routine recording once a week
+  on_symptoms: true                  # and whenever they report a symptom
+  on_alert: true                     # and when the platform alerts (the agent asks for one)
+
+# Emergency level, above critical (cardiologist review, Nov 2026): chest pain or fainting AND a
+# reliable abnormal ECG at the same time. A clinician starts a video call within 15 minutes and
+# records "call 911" or "cancel the alarm" with a reason. HeartSafe never calls 911 itself.
+# Chest pain or fainting without an abnormal ECG stays critical.
+emergency:
+  symptoms: [chest_pain, syncope]
+  patient_message: "If you feel worse, call 911."
+
 followup:
-  ack_deadline_h: {critical: 4, caution: 24, low: 72}
-  resolve_deadline_h: {critical: 48, caution: 120, low: 168}
+  ack_deadline_h: {emergency: 0.25, critical: 4, caution: 24, low: 72}   # emergency = 15 min to start the video call
+  resolve_deadline_h: {emergency: 1, critical: 48, caution: 120, low: 168}
   watch_every_h: 2                   # follow-up watch: how often every case and patient loop is checked
 
 # Patient loop: after a clinician resolves a clinical case, HeartSafe sends the instruction,
@@ -115,7 +130,7 @@ followup:
 patient_loop:
   confirm_deadline_h: {critical: 2, caution: 12}
   action_deadline_h: {critical: 6, caution: 48}
-  outcome_check_after_h: 72          # readings checked this long after the action
+  outcome_check_after_h: 24          # readings checked this long after the action (cardiologist review: 24 h)
   patient_median_confirm_h: {urban: 1.5, rural: 3, remote: 6}
   patient_no_response: {urban: 0.08, rural: 0.15, remote: 0.25}   # no signal, phone off, missed message
   helper_median_confirm_h: 3         # caregiver or community health worker, once contacted
@@ -129,6 +144,7 @@ patient_loop:
 # Assumed clinician response model for the simulation (same for both arms).
 clinicians:
   median_ack_h:
+    emergency: {urban: 0.08, rural: 0.1, remote: 0.12}   # on-call clinician is paged and starts the video call
     critical: {urban: 2, rural: 3, remote: 5}
     caution: {urban: 10, rural: 14, remote: 22}
     low: {urban: 24, rural: 30, remote: 40}
@@ -136,7 +152,8 @@ clinicians:
   forget_prob: 0.10              # alert/case slips through without tracking
   ignore_reminder_prob: 0.2      # first reminder missed -> goes to backup clinician
   response_after_reminder_h: 2
-  median_resolve_after_ack_h: {critical: 12, caution: 36, low: 48}
+  emergency_response_after_reminder_h: 0.1   # on-call answers a 15-minute reminder within minutes
+  median_resolve_after_ack_h: {emergency: 0.25, critical: 12, caution: 36, low: 48}
 
 equity:
   groups: [remoteness, sex, age_band, device]
