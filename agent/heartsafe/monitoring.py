@@ -22,7 +22,9 @@ LEVELS = {0: "normal", 1: "caution", 2: "critical"}
 REQUIRED = ["patient_id", "day", "submitted", "weight_kg", "sbp", "hr", "sob", "swelling"]
 # Optional columns: a platform that does not export them gets these defaults (rule never fires).
 OPTIONAL = {"dbp": np.nan, "spo2": np.nan, "chest_pain": False, "syncope": False, "orthopnea": False,
-            "pnd": False, "diuretic_taken": True, "potassium": np.nan, "creatinine_umol": np.nan}
+            "pnd": False, "diuretic_taken": True, "potassium": np.nan, "creatinine_umol": np.nan,
+            # the patient's self-care log (no alert rule uses these; see selfcare.py)
+            "sleep_hours": np.nan, "sleep_awakenings": np.nan, "breathing_sessions": np.nan}
 SYMPTOMS = ["sob", "swelling", "orthopnea", "pnd", "chest_pain", "syncope"]
 SYMPTOM_TEXT = {"sob": "shortness of breath", "swelling": "swelling", "orthopnea": "breathless lying flat",
                 "pnd": "woke up breathless at night", "chest_pain": "chest pain", "syncope": "fainting"}

@@ -5,12 +5,14 @@ import pandas as pd
 import pytest
 
 from heartsafe import load_config
-from heartsafe.agent import HeartSafeAgent, rule_key, run_baseline
+from heartsafe.agent import HeartSafeAgent, checkin_from_sleep_log, rule_key, run_baseline
 from heartsafe.equity import audit
 from heartsafe.evaluate import evaluate
 from heartsafe.monitoring import PlatformAdapter, patient_limits, platform_levels, rule_levels
 from heartsafe.reliability import assess_ecg, assess_reading
 from heartsafe.review import render, summarize_ecg, summarize_mri
+from heartsafe.selfcare import SelfCareLog, breathing_status, sleep_status, with_logged
+from heartsafe.selfcare import describe as describe_selfcare
 from heartsafe.signals import ecg_quality_index
 from heartsafe.simulate import simulate_cohort
 from heartsafe.tracker import PermissionDenied, Tracker
@@ -248,6 +250,195 @@ def test_every_ecg_recording_is_checked():
     assert CFG["patient_loop"]["outcome_check_after_h"] == 24
 
 
+def _run_with_rhythm(patients, feed, af_from_day=None, ecg_hr=70.0, cfg=CFG):
+    """Every ECG is reliable; from af_from_day on it shows atrial fibrillation. ecg_hr: the R-peak rate."""
+    tr = Tracker()
+    agent = HeartSafeAgent(cfg, patients, tr, np.random.default_rng(0), 30 * 24.0)
+
+    def read(p, row):
+        af = af_from_day is not None and row.day >= af_from_day
+        other = not af and ecg_hr != 70.0                      # a rate outside the limits is another abnormal rhythm
+        ecg = {"reliable": True, "action": "accept", "abnormal": af or other, "prob": 0.9 if af or other else 0.1,
+               "quality": 0.9, "uncertainty": 0.1, "reasons": [],
+               "rhythm": "af" if af else "other" if other else "normal", "af_prob": 0.9 if af else 0.02,
+               "hr": ecg_hr}
+        return ecg, {"ecg_checked": True, "ecg_reliable": True, "ecg_abnormal": ecg["abnormal"]}
+    agent._read_ecg = read
+    return agent.run(PlatformAdapter(feed).observable()), tr
+
+
+def test_new_af_is_critical_with_symptoms_and_caution_without():
+    # no symptoms on the routine recording of day 7: reported once, at caution level
+    patients, feed = _one_patient(symptom_day=9, symptom="sob", n_days=16)
+    patients["atrial_fibrillation"] = False
+    dec, tr = _run_with_rhythm(patients, feed, af_from_day=7)
+    first = dec[dec.day == 7].iloc[0]
+    assert first.decision == "ecg_new_af" and first.severity == "caution" and "ecg_new_af" in first["flags"]
+    case = tr.get(int(first.case_id))
+    assert case["kind"] == "clinical" and "new atrial fibrillation" in str(case["review"])
+    # a symptom two days later raises the same finding to critical; after that it is not reported again
+    later = dec[(dec.day == 9) & dec["flags"].fillna("").str.contains("ecg_new_af")]
+    assert later.severity.tolist() == ["critical"]
+    again = dec[(dec.day == 14) & (dec.decision == "ecg_known_af")]
+    assert len(again) == 1 and "already reported" in again.notes.iloc[0]
+    assert not dec[dec.day == 14]["flags"].fillna("").str.contains("ecg_new_af").any()
+    # a symptom on the day of the first AF recording: critical straight away
+    patients, feed = _one_patient(symptom_day=7, symptom="sob", n_days=10)
+    patients["atrial_fibrillation"] = False
+    dec, _ = _run_with_rhythm(patients, feed, af_from_day=7)
+    new = dec[dec["flags"].fillna("").str.contains("ecg_new_af")]
+    assert new.day.tolist() == [7] and new.severity.tolist() == ["critical"]
+
+
+def test_known_af_is_logged_not_escalated_as_new():
+    patients, feed = _one_patient(symptom_day=99)
+    patients["atrial_fibrillation"] = True                          # in the enrollment record
+    dec, tr = _run_with_rhythm(patients, feed, af_from_day=0)
+    assert dec[dec.day.isin([0, 7])].decision.tolist() == ["ecg_known_af", "ecg_known_af"]
+    assert "enrollment record" in dec.notes.iloc[0]
+    assert not any(c["kind"] == "clinical" for c in tr.cases())
+
+
+def test_heart_rate_on_the_ecg_uses_the_patients_own_limits():
+    patients, feed = _one_patient(symptom_day=9, symptom="orthopnea")   # a caution alert with a symptom
+    lim = patient_limits(CFG["alert_rules"], patients.iloc[0].to_dict())
+    dec, tr = _run_with_rhythm(patients, feed, ecg_hr=lim["hr_high"] + 20)
+    noted = dec[dec.day == 7].iloc[0]                                # routine recording, no alert: on the chart
+    assert noted.decision == "ecg_noted" and noted["flags"] == "ecg_tachycardia"
+    alert = dec[dec.day == 9].iloc[0]                                # with a symptom the ECG rate makes it critical
+    assert alert.decision == "escalate" and alert.severity == "critical"
+    assert "tachycardia on the ECG" in str(tr.get(int(alert.case_id))["review"])
+    dec, _ = _run_with_rhythm(patients, feed, ecg_hr=lim["hr_low"] - 8)
+    assert dec[dec.day == 7]["flags"].tolist() == ["ecg_bradycardia"]
+    # a personal limit set at enrollment moves the line: the same rate is then inside the limits
+    patients["hr_low"] = lim["hr_low"] - 15
+    dec, _ = _run_with_rhythm(patients, feed, ecg_hr=lim["hr_low"] - 8)
+    assert not dec["flags"].fillna("").str.contains("bradycardia").any()
+
+
+def test_known_af_choices_are_config_switches():
+    import copy
+    # chest pain + a reliable abnormal ECG that shows only the known AF: an emergency unless switched off
+    patients, feed = _one_patient(symptom_day=9, symptom="chest_pain")
+    patients["atrial_fibrillation"] = True
+    dec, _ = _run_with_rhythm(patients, feed, af_from_day=0)
+    assert dec[dec.day == 9].decision.tolist() == ["emergency"]
+    off = copy.deepcopy(CFG)
+    off["ecg_rhythm"]["known_af_triggers_emergency"] = False
+    dec, _ = _run_with_rhythm(patients, feed, af_from_day=0, cfg=off)
+    assert "emergency" not in dec.decision.values and dec[dec.day == 9].severity.tolist() == ["critical"]
+    # a caution alert with a symptom: known AF does not raise it unless the care team chooses so
+    patients, feed = _one_patient(symptom_day=9, symptom="orthopnea")
+    patients["atrial_fibrillation"] = True
+    dec, _ = _run_with_rhythm(patients, feed, af_from_day=0)
+    row = dec[dec.day == 9].iloc[0]
+    assert row.severity == "caution" and "ecg_known_af" in row["flags"]
+    on = copy.deepcopy(CFG)
+    on["ecg_rhythm"]["known_af_upgrades_with_symptoms"] = True
+    dec, _ = _run_with_rhythm(patients, feed, af_from_day=0, cfg=on)
+    assert dec[dec.day == 9].severity.tolist() == ["critical"]
+
+
+def test_ecg_rhythm_is_named_only_when_likely_enough():
+    out = {"probability": 0.9, "uncertainty": 0.1, "quality": {"sqi": 0.9, "heart_rate_bpm": 112},
+           "prediction": {"rhythm": {"label": "af", "probs": {"af": 0.42, "normal": 0.3, "other": 0.28}}}}
+    e = assess_ecg(out, CFG)
+    assert e["rhythm"] == "unclear" and e["hr"] == 112.0 and e["reliable"]
+    out["prediction"]["rhythm"]["probs"]["af"] = 0.8
+    assert assess_ecg(out, CFG)["rhythm"] == "af"
+    assert assess_ecg({"probability": 0.9, "uncertainty": 0.1, "quality": {"sqi": 0.9}}, CFG)["rhythm"] is None
+
+
+def _nights(hours, first_day=0):
+    return [{"day": first_day + i, "sleep_hours": h, "sleep_awakenings": 1.0} for i, h in enumerate(hours)]
+
+
+def test_sleep_is_compared_with_the_patients_own_usual():
+    s = sleep_status(_nights([7.0] * 6 + [5.0, 5.0]), {"day": 8, "sleep_hours": 5.0, "sleep_awakenings": 3.0}, CFG)
+    assert s["worse"] and s["usual_h"] == 7.0 and s["recent_h"] == 5.0
+    assert "usual 7.0 h" in s["text"] and "woke 1.7 times a night (usual 1)" in s["text"]
+    assert not sleep_status(_nights([7.0] * 6 + [6.0] * 3), None, CFG)["worse"]       # 1 h less: not enough
+    assert not sleep_status(_nights([7.0] * 6 + [4.0, 4.0, 6.5]), None, CFG)["worse"]  # one good night
+    assert sleep_status(_nights([5.0] * 6 + [4.0] * 3), None, CFG)["worse"]           # under 4.5 h a night
+    short = sleep_status(_nights([7.0] * 3 + [4.0] * 3), None, CFG)                   # usual not known yet
+    assert short["usual_h"] is None and not short["worse"]
+    assert sleep_status([{"day": 0, "weight_kg": 70.0}], None, CFG) is None           # nothing logged
+    b = breathing_status([{"day": d, "breathing_sessions": n} for d, n in enumerate([3, 2, 1, 2])], None, CFG)
+    assert b == {"plan": CFG["selfcare"]["breathing"]["sessions_per_day"], "days": 4, "per_day": 2.0}
+    text = describe_selfcare({"sleep": s, "breathing": b})
+    assert text.startswith("Sleep worse than usual") and "2 of 3 planned sessions a day" in text
+
+
+def test_worse_sleep_opens_one_low_priority_checkin():
+    patients, feed = _one_patient(symptom_day=99, n_days=20)
+    feed["sleep_hours"] = np.where(feed.day.between(10, 16), 4.5, 7.0)
+    feed["sleep_awakenings"] = 1.0
+    dec, tr = _run_with_ecg(patients, feed, reliable=True, abnormal=False)
+    checks = dec[dec.decision == "sleep_check"]
+    assert checks.day.tolist() == [12] and checks.severity.tolist() == ["low"]   # third short night; then not again
+    case = tr.get(int(checks.case_id.iloc[0]))
+    assert case["kind"] == "sleep_check" and case["severity"] == "low"
+    assert "sleep worse than usual" in str(case["review"]) and not tr.loops()    # a call, not a clinical case
+    assert not any(c["kind"] == "clinical" for c in tr.cases())
+
+
+def test_selfcare_log_is_for_the_patient_side_only():
+    log = SelfCareLog()
+    for role in ("agent", "clinician"):
+        with pytest.raises(PermissionDenied):
+            log.log_sleep("P1", 5, 129.0, "x", role, 6.0)
+    with pytest.raises(ValueError):
+        log.log_sleep("P1", 5, 129.0, "P1", "patient", 30)
+    with pytest.raises(ValueError):
+        log.log_breathing("P1", 5, 129.0, "P1", "patient", "Slow breathing", 0)
+    log.log_sleep("P1", 5, 129.0, "P1", "patient", 6.0, awakenings=2)
+    log.log_sleep("P1", 5, 130.0, "daughter", "caregiver", 4.5, awakenings=3, woke_breathless=True,
+                  kept_awake=["cough"])
+    for _ in range(2):
+        log.log_breathing("P1", 5, 131.0, "P1", "patient", "Slow breathing", 5)
+    d = log.days("P1")[5]
+    assert d["sleep_hours"] == 4.5 and d["woke_breathless"] and d["breathing_sessions"] == 2   # last sleep entry counts
+    assert len(log.entries("P1")) == 4 and len(log.entries("P1", "breathing")) == 2 and log.days("P2") == {}
+    merged = with_logged([{"day": 4, "sleep_hours": 7.0, "breathing_sessions": 1.0},
+                          {"day": 5, "sleep_hours": 7.0, "breathing_sessions": 1.0}], log.days("P1"))
+    assert [m["sleep_hours"] for m in merged] == [7.0, 4.5] and merged[1]["breathing_sessions"] == 3.0
+    assert [m["day"] for m in with_logged([], {9: {"day": 9, "sleep_hours": 6.0}})] == [9]
+
+
+def test_sleep_logged_in_the_app_reaches_the_care_team():
+    patients, _ = _one_patient()
+    p = patients.iloc[0].to_dict()
+    usual = _nights([7.0] * 8)
+    good = {"day": 8, "sleep_hours": 7.0, "sleep_awakenings": 1}
+    tr = Tracker()
+    assert checkin_from_sleep_log(tr, CFG, p, usual, good, 201.0)[:2] == (None, None) and not tr.cases()
+    # three short nights: a low-priority check-in call
+    bad = usual + _nights([4.5, 4.5], 8)
+    what, cid, sc = checkin_from_sleep_log(tr, CFG, p, bad, {"day": 10, "sleep_hours": 4.5, "sleep_awakenings": 3},
+                                           249.0)
+    case = tr.get(cid)
+    assert what == "checkin" and (case["kind"], case["severity"]) == ("sleep_check", "low") and sc["sleep"]["worse"]
+    assert case["ack_deadline_h"] - case["created_h"] == CFG["followup"]["ack_deadline_h"]["low"]
+    # while that case is open, the next entry is added to it
+    what, same, _ = checkin_from_sleep_log(tr, CFG, p, bad, {"day": 10, "sleep_hours": 4.0, "sleep_awakenings": 3},
+                                           250.0)
+    assert (what, same) == ("noted", cid) and tr.audit(cid)[-1]["action"] == "evidence"
+    # after the nurse's call: no second sleep-only check-in inside the cooldown ...
+    for a in ("acknowledge", "review"):
+        tr.act(cid, a, 260.0, "n", "clinician")
+    tr.act(cid, "resolve", 261.0, "n", "clinician", "called; pain at night, plan documented")
+    worse_again = {"day": 13, "sleep_hours": 4.0, "sleep_awakenings": 3}
+    hist = bad + _nights([4.5, 4.5, 4.5], 10)
+    assert checkin_from_sleep_log(tr, CFG, p, hist, worse_again, 321.0)[0] is None
+    # ... but breathlessness at night is a symptom: a caution check-in whatever the sleep hours
+    what, cid2, _ = checkin_from_sleep_log(tr, CFG, p, hist, {**good, "day": 13, "woke_breathless": True}, 322.0)
+    case = tr.get(cid2)
+    assert what == "checkin" and cid2 != cid and case["severity"] == "caution"
+    review = json.loads(case["review"])
+    assert review["symptoms"] == ["pnd"] and "reported in the sleep log" in review["why_flagged"][0]
+    assert all(a["role"] != "agent" or a["action"] in ("create", "evidence") for a in tr.audit())
+
+
 @pytest.fixture(scope="module")
 def small_run():
     patients, feed = simulate_cohort(CFG, n_patients=150, n_days=60, seed=3)
@@ -256,8 +447,12 @@ def small_run():
     tr = Tracker()
     truth = {(r.patient_id, r.day): bool(r.gt_episode) for r in feed.itertuples()}
     scale_truth = {(r.patient_id, r.day) for r in feed[feed.gt_fault == "scale_change"].itertuples()}
+    rhythm_truth = {(r.patient_id, r.day): "new_af" if r.gt_new_af else "af"
+                    for r in feed[feed.gt_rhythm == "af"].itertuples()}
+    for r in feed[feed.gt_rate.isin(["slow", "fast"])].itertuples():
+        rhythm_truth.setdefault((r.patient_id, r.day), "rate")
     agent = HeartSafeAgent(CFG, patients, tr, np.random.default_rng(1), horizon, truth=truth,
-                           scale_truth=scale_truth)
+                           scale_truth=scale_truth, rhythm_truth=rhythm_truth)
     obs = PlatformAdapter(feed).observable()
     assert not any(c.startswith("gt_") for c in obs.columns)
     dec = agent.run(obs)
@@ -327,6 +522,40 @@ def test_end_to_end_metrics(small_run):
     pl = res["patient_loop"]
     assert pl["n"] > 0 and pl["heartsafe_action_done"] > pl["platform_alone_action_done"]
     assert set(pl["confirmed_by"]) >= {"patient"}
+
+
+def test_simulated_heart_rate_spells_are_outside_the_patients_limits(small_run):
+    patients, feed, *_ = small_run
+    assert set(feed.gt_rate) <= {"none", "slow", "fast"} and not feed.gt_rate.eq("none").all()
+    pats = patients.set_index("patient_id").to_dict("index")
+    for r in feed[feed.gt_rate.ne("none") & feed.submitted].itertuples():
+        lim = patient_limits(CFG["alert_rules"], pats[r.patient_id])
+        assert r.hr > lim["hr_high"] if r.gt_rate == "fast" else r.hr < lim["hr_low"]
+        assert r.alert_level == 2                                     # the platform's own rule fires too
+
+
+def test_rhythm_and_selfcare_results(small_run):
+    patients, feed, dec, cases, base, horizon, _ = small_run
+    res, _ = evaluate(feed, patients, dec, cases, base, horizon, CFG["alert_rules"], cfg=CFG)
+    rh, sc = res["rhythm"], res["selfcare"]
+    # every reliable AF recording of a patient with AF at enrollment is logged as known, never as new
+    known = set(patients[patients.atrial_fibrillation.astype(bool)].patient_id)
+    named = dec[dec.ecg_af.notna()]
+    assert rh["known_af_recordings_not_escalated_as_new"] == int(named.patient_id.isin(known).sum()) > 0
+    assert (named[named.patient_id.isin(known)].ecg_af == "known").all()
+    assert not dec[dec.patient_id.isin(known)]["flags"].fillna("").str.contains("ecg_new_af").any()
+    assert rh["new_af_reports"] == int((dec.ecg_af == "new").sum())
+    assert set(rh["new_af_report_severity"]) <= {"caution", "critical", "emergency"}
+    # sleep: check-in calls are low priority, at most one per patient inside the cooldown
+    checks = dec[dec.decision == "sleep_check"]
+    assert sc["sleep_checkins"] == len(checks) > 0 and (checks.severity == "low").all()
+    gap = checks.sort_values("day").groupby("patient_id").day.diff().dropna()
+    assert (gap >= CFG["selfcare"]["sleep"]["repeat_after_days"]).all()
+    assert (cases[cases.kind == "sleep_check"].severity == "low").all()
+    assert sc["nights_logged"] == int(feed.sleep_hours.notna().sum())
+    assert 0 < sc["breathing"]["mean_sessions_per_day"] <= sc["breathing"]["plan_sessions_per_day"]
+    assert res["nurse_queue_per_100_patient_months"]["heartsafe_sleep_checkins"] == sc["checkins_per_100_patient_months"]
+    json.dumps(res, default=float)
 
 
 class _Block:

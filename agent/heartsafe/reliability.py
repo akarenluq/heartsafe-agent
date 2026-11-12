@@ -101,8 +101,17 @@ def assess_ecg(o, cfg):
         if o.get("shift_score") is not None and "device_shift" in o.get("flags", []):
             reasons.append("device shift")
         action = "accept" if not reasons else ("repeat" if q < r["ecg_min_quality"] else "escalate")
+    # named rhythm (3-class model) and the R-peak heart rate, when the pipeline provides them
+    rh = (o.get("prediction") or {}).get("rhythm") or {}
+    af_prob = (rh.get("probs") or {}).get("af")
+    label = rh.get("label")
+    if label == "af" and (af_prob or 0) < cfg.get("ecg_rhythm", {}).get("af_min_prob", 0.5):
+        label = "unclear"  # AF is the most likely class but not likely enough to name it
+    hr = (o.get("quality") or {}).get("heart_rate_bpm")
     return {"reliable": action == "accept", "action": action, "abnormal": prob >= r["ecg_abnormal_prob"],
-            "prob": prob, "quality": q, "uncertainty": unc, "reasons": list(dict.fromkeys(reasons))}
+            "prob": prob, "quality": q, "uncertainty": unc, "reasons": list(dict.fromkeys(reasons)),
+            "rhythm": label, "af_prob": af_prob,
+            "hr": float(hr) if hr is not None else None}
 
 
 def assess_mri(o):

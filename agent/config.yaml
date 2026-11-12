@@ -47,6 +47,31 @@ simulation:
   regional_scanner_share: {urban: 0.1, rural: 0.5, remote: 0.8}   # MRI on a scanner the model never saw
   mri_fault_share: {urban: 0.05, rural: 0.10, remote: 0.15}       # MRIs drawn from fault-injected exams
   imaging_seen_vendors: [A, B]                                    # M&Ms vendors in nnU-Net training
+  # Heart rhythm (ground truth for the ECG the patient records). Own random stream per patient.
+  rhythm:
+    permanent_af_share: 0.5                  # of patients with AF at enrollment: in AF on every recording
+    paroxysmal_af_day_prob: 0.15             # the others: chance of being in AF on a given day
+    new_af_prob: 0.04                        # patients WITHOUT known AF who develop it in the period
+    new_af_days: [6, 14]                     # how long the new AF lasts in the simulation
+    new_af_hr_rise: 18                       # bpm faster while in new AF
+    new_af_breathless: 0.35                  # extra daily chance of reporting shortness of breath
+  # A few days with the heart rate outside the patient's own limits. Own random stream per patient.
+  heart_rate_spells:
+    slow_prob: 0.02                          # patients on a beta-blocker without a pacemaker: too slow
+    fast_prob: 0.015                         # any patient: too fast
+    days: [2, 5]
+    breathless: 0.4                          # daily chance of reporting shortness of breath in the spell
+  # Patient-reported sleep and breathing-exercise sessions (daily check-in). Own random stream.
+  selfcare:
+    usual_sleep_h: [6.7, 0.8]                # mean, SD of a patient's usual night
+    night_sd_h: 0.7
+    poor_sleep_prob: 0.08                    # a spell of poor sleep not caused by decompensation
+    poor_sleep_early_scale_days: 20          # most likely in the first weeks after discharge
+    poor_sleep_days: [5, 14]
+    poor_sleep_loss_h: 2.0
+    episode_sleep_loss_h: 1.6                # at the peak of a decompensation
+    breathless_night_loss_h: 1.0             # nights with breathlessness lying flat or waking breathless
+    breathing_adherence_beta: [4, 2]         # share of planned sessions a patient does
 
 # Who is enrolled. Reviewed with cardiologists (Nov 2026): NYHA class is used because it is
 # assessed at the bedside; ejection fraction is not required (it needs an echocardiogram).
@@ -110,6 +135,20 @@ ecg_protocol:
   on_symptoms: true                  # and whenever they report a symptom
   on_alert: true                     # and when the platform alerts (the agent asks for one)
 
+# Named rhythm findings from a reliable single-lead ECG (asked for in the cardiologist review, Nov 2026):
+# atrial fibrillation from the 3-class rhythm model (normal / AF / other abnormal), and
+# bradycardia / tachycardia from the R-peak heart rate against the patient's own limits
+# (hr_low / hr_high from enrollment, else the alert_rules defaults).
+# AF in a patient with atrial_fibrillation at enrollment is known, not new: logged, not escalated.
+ecg_rhythm:
+  af_min_prob: 0.5                   # AF probability needed to name it
+  new_af_with_symptoms: critical     # new AF and a reported symptom the same day
+  new_af_without_symptoms: caution
+  # Known AF makes every recording abnormal, so it is no new evidence. Two choices for the
+  # cardiologist (results.rhythm reports how often each one matters):
+  known_af_triggers_emergency: true        # chest pain or fainting + known AF on the ECG -> emergency (rule unchanged)
+  known_af_upgrades_with_symptoms: false   # a caution alert with symptoms + known AF on the ECG -> critical
+
 # Emergency level, above critical (cardiologist review, Nov 2026): chest pain or fainting AND a
 # reliable abnormal ECG at the same time. A clinician starts a video call within 15 minutes and
 # records "call 911" or "cancel the alarm" with a reason. HeartSafe never calls 911 itself.
@@ -154,6 +193,24 @@ clinicians:
   response_after_reminder_h: 2
   emergency_response_after_reminder_h: 0.1   # on-call answers a 15-minute reminder within minutes
   median_resolve_after_ack_h: {emergency: 0.25, critical: 12, caution: 36, low: 48}
+
+# Self-care the patient logs every day: last night's sleep and breathing-exercise sessions.
+# Sleep is compared with the patient's OWN usual sleep (median of their earlier nights).
+# Worse sleep alone never raises a clinical alert: it opens a low-priority check-in call and is
+# shown in every review. The breathing plan comes from the care team; HeartSafe only counts sessions.
+selfcare:
+  sleep:
+    window_nights: 3                 # the last nights looked at
+    min_usual_nights: 4              # earlier nights needed to know the usual sleep
+    each_night_h: 1.0                # every one of those nights at least this far below the usual, and
+    drop_h: 1.5                      # their average this far below the usual
+    short_h: 4.5                     # (or their average under this many hours)
+    repeat_after_days: 21            # at most one sleep check-in per patient in this time
+  breathing:
+    sessions_per_day: 3              # the care team's plan
+    exercises:
+      slow: {name: "Slow breathing", in_s: 4, hold_s: 0, out_s: 6}
+      deep: {name: "Deep breathing with a pause", in_s: 4, hold_s: 2, out_s: 6}
 
 equity:
   groups: [remoteness, sex, age_band, device]

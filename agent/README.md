@@ -46,9 +46,13 @@ false alarms and reminders against the last run without safeguards.
 Use a real platform export (e.g. from Medly) instead of the simulation:
 `python -m heartsafe.run --feed export.csv --patients-csv patients.csv`
 (columns: patient_id, day, submitted, weight_kg, sbp, hr, sob, swelling; optional: dbp, spo2,
-orthopnea, pnd, chest_pain, syncope, diuretic_taken, potassium, creatinine_umol; patients:
-patient_id, remoteness, sex, age, age_band, device, ecg_kit; optional: nyha, caregiver,
-creatinine_baseline_umol and the patient's own limits sbp_low, sbp_high, dbp_high, hr_low, hr_high).
+orthopnea, pnd, chest_pain, syncope, diuretic_taken, potassium, creatinine_umol, sleep_hours,
+sleep_awakenings, breathing_sessions; patients: patient_id, remoteness, sex, age, age_band, device,
+ecg_kit; optional: nyha, caregiver, creatinine_baseline_umol and the patient's own limits sbp_low,
+sbp_high, dbp_high, hr_low, hr_high).
+
+The run builds the case database in memory and saves it at the end, so a re-run works while the
+dashboard is open. A full run (2,000 patients, real model outputs) takes about 6 minutes on a laptop.
 
 ## Who is enrolled
 
@@ -87,6 +91,37 @@ Every ECG the patient records is checked, not only those on alert days (`ecg_pro
 not usable (disconnected, noisy, low quality) gets "please record it again"; a reliable abnormal
 recording with no alert is added to the chart for the next review; a normal one is logged.
 
+A reliable recording is also named, not only called normal or abnormal (`ecg_rhythm` in `config.yaml`):
+
+- **Atrial fibrillation (AF).** A second ECG model gives normal / AF / other abnormal
+  (`../ecg/scripts/05_rhythm.py`). AF is named when its AF probability is at least 0.5; below that the
+  rhythm is "unclear" and the recording is handled as before.
+  - **New AF** (no AF in the enrollment record): reported to the care team once. With symptoms it is
+    **critical**; without symptoms it is caution, and it is raised to critical if symptoms follow.
+    Later AF recordings are logged as "already reported".
+  - **Known AF** (AF in the enrollment record): logged, never reported as new.
+- **Heart rate from the R-peaks** of the recording, against the patient's own limits (`hr_low`,
+  `hr_high`; defaults 45 and 120): bradycardia or tachycardia. With no alert it is added to the chart;
+  with a caution alert and symptoms the case is raised to critical.
+
+Two choices about known AF are switches for the cardiologists to set, with what each cost in the last
+simulated run:
+
+| Switch (`ecg_rhythm`) | Default | In the simulated cohort |
+|---|---|---|
+| `known_af_triggers_emergency` | true: chest pain or fainting with known AF on the ECG is still an emergency | 31 of 74 emergencies had known AF as the ECG finding; clinicians cancelled 10 of them |
+| `known_af_upgrades_with_symptoms` | false: a caution alert with symptoms is not raised to critical when the only ECG finding is known AF | 425 caution alerts stayed caution |
+
+Rhythm model on held-out recordings it accepted: PTB-XL (n = 1,827) AF sensitivity 0.86, specificity
+0.99; a second device, PhysioNet/CinC 2017 (n = 1,220), sensitivity 0.76, specificity 0.96. Heart rate
+from the R-peaks against the PTB-XL statements: sinus tachycardia sensitivity 0.89, sinus bradycardia
+0.63. In the simulated cohort, 29 of 31 new-AF spells in patients with an ECG kit reached the care
+team (median 2 days from onset), and no recording from a patient with known AF was reported as new.
+**Limit:** 20 of the 49 new-AF reports named AF on a recording whose simulated rhythm was not AF. The
+report asks the clinician to confirm on a 12-lead ECG; waiting for a second recording before
+reporting is possible future work. The platform's own heart-rate rule is already critical, so the
+ECG heart rate mostly confirms an alert (31 of 45 simulated heart-rate spells) and does not add new ones.
+
 ## What the agent does with each platform alert
 
 | Check | Example | Action |
@@ -98,7 +133,10 @@ recording with no alert is added to the chart for the next review; a normal one 
 | Nurse finds the same scale | | the gain is real: tracked clinical case |
 | Alert no longer stands on corrected data | 7-day gain explained by a verified new scale | filtered, logged |
 | ECG quality or model uncertainty too poor | quality 0.4 | ECG not used as evidence, repeat ECG requested |
-| Reliable abnormal ECG with symptoms | caution alert | raised to critical |
+| Reliable abnormal ECG with symptoms | caution alert | raised to critical (not when the only ECG finding is known AF, see above) |
+| New AF on a reliable ECG | no AF at enrollment | reported once: critical with symptoms, caution without |
+| Heart rate on the ECG outside the patient's own limits, with symptoms | caution alert | raised to critical |
+| Sleep worse than the patient's own usual, no alert | 3 short nights | low-priority check-in call for the nurse, never a clinical alert |
 | Otherwise | | tracked case with an explainable review |
 | 3 days with no readings | | outreach task |
 | MRI result flagged by the imaging pipeline | high uncertainty | imaging review case |
@@ -128,6 +166,37 @@ propose contacting helpers earlier for a group (`earlier_patient_followup`, admi
 Patient response times and no-response rates are simulation assumptions, and the simulation does not
 model the effect of treatment, so "readings did not improve" reopens are not a measure of care quality.
 
+## Sleep and breathing exercises
+
+Poor sleep and shallow breathing are common in the weeks after a heart-failure admission or heart
+surgery. Patients log last night's sleep and their breathing-exercise sessions; HeartSafe shows both to
+the care team and asks a nurse to call when sleep gets worse. It gives no medical advice: the breathing
+plan comes from the care team, and the patient page says to stop and rest on dizziness, chest pain or
+more shortness of breath. Settings are under `selfcare` in `config.yaml`.
+
+- **Patient page ("Sleep and breathing", the patient role in the dashboard).** Sleep: hours slept,
+  times woken, "slept propped up", "woke up short of breath", what kept them awake, and a chart
+  against their own usual. Breathing exercises: a paced timer (slow breathing 4 s in / 6 s out, or
+  with a 2 s pause), 2 or 5 minutes, counted against the plan (3 sessions a day by default).
+- **Sleep rule.** Sleep is compared with the patient's own usual (the median of their earlier nights,
+  at least 4), not with a fixed number of hours. "Worse" means each of the last 3 nights at least 1 h
+  below usual, and on average at least 1.5 h below usual or under 4.5 h.
+- **What the agent does.** Worse sleep on a day with no alert opens a low-priority **check-in call**
+  for the nurse (`sleep_check`), at most one per patient in 21 days; with a case already open it is
+  added to that case. It is never a clinical alert on its own. "Slept propped up" and "woke up short
+  of breath" are symptoms the platform already alerts on, so those answers make the check-in caution.
+- **In every review.** Sleep against usual and breathing sessions against the plan are shown on the
+  case and on the patient journey.
+- **Who can log.** Only the patient, a caregiver or a community health worker (`SelfCareLog`); entries
+  made in the app are kept in `data/selfcare.db`, which a cohort re-run does not erase.
+
+In the simulated cohort: 318 sleep check-ins and 50 notes on open cases (5.3 check-ins per 100
+patient-months, against 89.5 clinical cases); 92% of simulated poor-sleep spells led to a check-in
+or a note; breathing sessions averaged 2.0 a day against a plan of 3. How patients sleep and how often
+they do the exercises are simulation assumptions (`simulation.selfcare` in `config.yaml`), so these
+numbers show the workload of the rule, not a clinical benefit. In the demo the clock stands at day 90,
+so a patient can log one night; the earlier nights come from the platform feed.
+
 ## Files
 
 ```
@@ -136,6 +205,7 @@ heartsafe/simulate.py  simulated cohort modelled on Medly (+ scripted demo patie
 heartsafe/monitoring.py  platform adapter and alert rules (modelled on Medly)
 heartsafe/reliability.py  reading, ECG and MRI reliability checks
 heartsafe/signals.py   ECG quality index; loaders for ECG / imaging pipeline outputs
+heartsafe/selfcare.py  sleep rule, breathing-session count, the patient-side log
 heartsafe/review.py    explainable review (template), ECG and MRI report summaries
 heartsafe/watch.py     follow-up watch: checks every case and patient loop every few hours
 heartsafe/orchestrator.py  optional Claude review writer (future work, off by default)

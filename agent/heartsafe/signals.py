@@ -73,34 +73,62 @@ def _split_truth(o):
     return o, gt
 
 
-def ecg_output(patient, true_episode, cfg, rng, pool=None, demo=False):
+def _rhythm_of(o):
+    """True rhythm class of a pool recording (normal / af / other), when the ECG pipeline wrote it."""
+    return o.get("_eval", {}).get("rhythm")
+
+
+def ecg_output(patient, true_episode, cfg, rng, pool=None, demo=False, rhythm=None, hr=None):
     """One ECG model output for a patient-day -> (output the agent sees, ground truth).
 
     With real outputs, the simulated world picks a recording whose label matches the
     patient's true state, from the fault-injected set at a remoteness-dependent rate.
-    The demo patient gets a clean recording the pipeline accepted (the demo script)."""
+    The demo patient gets a clean recording the pipeline accepted (the demo script).
+
+    rhythm: the patient's true rhythm today ("af", "other" = another abnormal rhythm such as a
+    heart rate outside the limits, or None = sinus). A patient in atrial fibrillation gets an AF
+    recording; a decompensation without AF gets another abnormal recording. hr: today's heart
+    rate, to prefer a recording with a similar rate."""
+    af = rhythm == "af"
+    true_episode = bool(true_episode) or rhythm == "other"
     if pool:
         sc = cfg["simulation"]
         faulty = (not demo) and bool(rng.random() < sc["ecg_fault_share"][patient["remoteness"]])
-        label = "abnormal" if true_episode else "normal"
+        label = "abnormal" if (true_episode or af) else "normal"
+        want = "af" if af else "other" if true_episode else "normal"
+        near = hr is not None and not np.isnan(hr)
         o = _pick(pool, rng, lambda o: o.get("_eval", {}).get("label") == label,
+                  lambda o: _rhythm_of(o) == want,
                   lambda o: (o.get("_eval", {}).get("fault", "none") != "none") == faulty,
-                  (lambda o: o.get("suggested_action") == "accept") if demo else (lambda o: True))
+                  (lambda o: o.get("suggested_action") == "accept") if demo else (lambda o: True),
+                  # a recording with a heart rate like today's reading: widest match first
+                  *[(lambda o, tol=tol: abs((o.get("quality", {}).get("heart_rate_bpm") or 1e9) - hr) <= tol)
+                    for tol in ((24, 12, 6) if near else ())])
         o["source"] = "ecg_model"
-        return _split_truth(o)
+        o, gt = _split_truth(o)
+        return o, {**gt, "rhythm": gt.get("rhythm") or want}
     a, b = cfg["simulation"]["ecg_quality_beta"][patient["remoteness"]]
     quality = float(rng.beta(a, b))
-    p_true = 0.8 if true_episode else 0.12
+    p_true = 0.8 if (true_episode or af) else 0.12
     abnormal = rng.random() < p_true
     prob = float(np.clip(rng.normal(0.8 if abnormal else 0.2, 0.12), 0.01, 0.99))
     # Poor signals make the model less certain and more often wrong.
     if quality < 0.5 and rng.random() < 0.4:
         prob = float(np.clip(1 - prob + rng.normal(0, 0.1), 0.01, 0.99))
     unc = float(np.clip(0.1 + (1 - quality) * 0.5 + rng.normal(0, 0.05), 0, 1))
+    # Rhythm classes follow the abnormal probability (no extra random draws): in true AF most of it
+    # goes to AF, otherwise to "other abnormal".
+    share = 0.9 if af else 0.05
+    probs = {"normal": round(1 - prob, 3), "af": round(share * prob, 3), "other": round((1 - share) * prob, 3)}
+    q = {"sqi": round(quality, 3)}
+    if hr is not None and not np.isnan(hr):
+        q["heart_rate_bpm"] = float(hr)
     return ({"source": "simulated", "modality": "ecg_single_lead",
-             "prediction": {"abnormal_prob": round(prob, 3)}, "probability": round(prob, 3),
-             "uncertainty": round(unc, 3), "quality": {"sqi": round(quality, 3)}},
-            {"fault": "low_quality" if quality < 0.5 else "none"})
+             "prediction": {"abnormal_prob": round(prob, 3),
+                            "rhythm": {"label": max(probs, key=probs.get), "probs": probs, "model": "simulated"}},
+             "probability": round(prob, 3), "uncertainty": round(unc, 3), "quality": q},
+            {"fault": "low_quality" if quality < 0.5 else "none",
+             "rhythm": "af" if af else "other" if true_episode else "normal"})
 
 
 def mri_output(patient, true_episode, cfg, rng, pool=None, demo=False):

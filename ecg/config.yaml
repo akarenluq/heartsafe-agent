@@ -21,6 +21,13 @@ model:
 
 abnormal_prob: 0.5
 
+# Step 5: rhythm model (normal / atrial fibrillation / other abnormal), a separate 3-class
+# ensemble trained on PTB-XL folds 1-8 + 60% of CinC 2017; CinC 30% held out for testing.
+rhythm:
+  members: 3
+  epochs: 30
+  cinc_split_seed: 0
+
 quality:
   min_sqi: 0.6          # agent index (flatline, clipping); same as agent reliability.ecg_min_quality
   hr_range_bpm: [30, 200]
