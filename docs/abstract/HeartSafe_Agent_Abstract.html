@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HeartSafe Agent Abstract</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=STIX+Two+Text:ital,wght@0,400;0,600;0,700;1,400&family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  /* Source of docs/HeartSafe_Agent_Abstract.pdf. Render: python render_pdf.py */
+  :root { --ink: #111; --head: #4b4ba6; --muted: #444; --paper: #fff; }
+  @page { size: Letter; margin: 0.8in 0.9in 0.75in; }
+  html { background: var(--paper); }
+  body { margin: 0 auto; max-width: 6.7in; color: var(--ink); background: var(--paper);
+         font: 9.6pt/1.27 "STIX Two Text", "Times New Roman", serif; text-align: justify; hyphens: auto; }
+  h1 { font-size: 13pt; font-weight: 700; text-align: center; line-height: 1.22; margin: 0 0 7pt; }
+  .team { text-align: center; font-weight: 700; margin: 0 0 3pt; }
+  .authors { display: flex; justify-content: center; gap: 20pt; text-align: center; margin-bottom: 10pt; }
+  .authors div { line-height: 1.12; }
+  .authors small { display: block; font-size: 6.4pt; color: var(--muted); }
+  .meta { text-align: left; margin: 0 0 8pt; line-height: 1.25; }
+  h2 { color: var(--head); font-size: 10.6pt; font-weight: 700; margin: 10pt 0 4pt; text-align: left; }
+  p { margin: 0 0 5pt; }
+  ul { margin: 0 0 5pt; padding-left: 14pt; }
+  li { margin: 0 0 2pt; }
+  b { font-weight: 700; }
+  figure { margin: 6pt auto 8pt; break-inside: avoid; }
+  figure svg { width: 86%; height: auto; display: block; margin: 0 auto; }
+  figcaption { font-size: 8.2pt; line-height: 1.25; margin-top: 4pt; }
+  .refs { font-size: 7.2pt; line-height: 1.25; margin-top: 6pt; }
+  .refs p { margin-bottom: 4pt; }
+  svg text { font-family: "Source Sans 3", "Segoe UI", Arial, sans-serif; }
+  @media screen { body { padding: 24px 16px 48px; } }
+</style>
+</head>
+<body>
+
+<h1>HeartSafe Agent: An Equity-Aware AI Agent for Trustworthy Remote<br>Cardiac Monitoring and Closed-Loop Care in Rural Canada</h1>
+<p class="team">Team #40</p>
+<div class="authors">
+  <div>Yassmin Abdelaziz<small>safwatab@ualberta.ca</small></div>
+  <div>Ana Karen Luque Flores<small>anakarenluq@gmail.com</small></div>
+  <div>Vertika Chaudhary<small>vertikachaudhary9918@gmail.com</small></div>
+</div>
+<div class="meta">
+  <b>Hackathon Theme:</b> AI for Good in the Era of Agents<br>
+  <b>Theme Area:</b> Theme 4 – AI for Social Impact: Health, Agriculture &amp; Inclusive Innovation<br>
+  <b>Challenge:</b> Challenge 1 – AI for Better &amp; More Equitable Healthcare
+</div>
+
+<h2>1. Problem Being Addressed</h2>
+<p>Heart disease is the second leading cause of death in Canada, claiming 57,890 lives in 2023. Rural and remote
+communities, including many First Nations, Métis and Inuit communities, face added barriers to specialized cardiac
+care, diagnostic imaging and timely follow-up. Nationally, Canadians already wait a median of 59 days for an MRI.
+First Nations people have about 2.5 times the cardiovascular disease prevalence of non-First Nations people, and in
+Ontario, rural patients with stable ischemic heart disease had 29% fewer cardiology visits than urban patients in the
+year after angiography.</p>
+<p>Remote monitoring platforms help close this gap. Medly, from the University Health Network, already supports
+heart-failure patients in First Nations communities in Northern Ontario: after discharge, they send daily weight,
+blood pressure, heart rate and symptoms from home and receive alerts. AI-powered wearable ECG and medical image
+analysis could add further insight. But home readings are often poorly captured (a new scale, weight typed in pounds,
+a misplaced cuff, missed days), and AI models are usually validated on limited populations. Both can trigger false
+alarms or fail silently, and the communities with the fewest specialists are the least able to catch these failures.</p>
+<p>Detecting an abnormality also does not guarantee that the patient receives care. In resource-constrained settings,
+uncertain results, delayed reviews and unresolved referrals can quietly fall through the cracks, and a patient may
+never receive or act on the clinician’s instruction, widening existing health inequities.</p>
+
+<h2>2. Proposed AI Solution and Approach</h2>
+<p>HeartSafe Agent is an equity-aware agentic AI layer that sits on top of existing remote monitoring platforms and
+connects their alerts and cardiac AI predictions to trustworthy, accountable follow-up (Figure 1). It does not replace
+the platform or the clinical team. It combines three inputs: the platform’s daily readings and alerts; a wearable
+single-lead ECG model that detects concerning patterns at home; and a medical image segmentation model that quantifies
+cardiac structure and function when imaging is performed, typically at a regional centre after referral.</p>
+<p><b>Target population.</b> Adults in rural and remote communities, discharged within the last 14 days after more
+than 48 hours in hospital for decompensated heart failure, NYHA class II–IV, and able to take readings alone or with a
+caregiver, monitored for 30–90 days. Exclusions follow a published Medly trial: dementia, long-term care, life
+expectancy under one year, transplant listing or ventricular assist device, and dialysis. NYHA class is used because it
+is assessed at the bedside, without an echocardiogram.</p>
+<p>Around these inputs, the agent plans and carries out four tasks:</p>
+<ul>
+  <li><b>Evaluates reliability.</b> For every alert or result, it checks data quality (implausible values, unit and
+  cuff errors, device changes), signal and image quality, prediction uncertainty, device or scanner shift, and
+  physiological plausibility. It then decides whether to accept the result, request a repeat, or escalate. A reliable
+  ECG is also named: new atrial fibrillation is reported to the care team, atrial fibrillation already in the
+  enrollment record is not, and the heart rate is checked against the patient’s own limits. A suspected new scale is
+  confirmed by a nurse before baselines change, and only a clinician can close a case.</li>
+  <li><b>Coordinates escalation.</b> It prepares structured review requests for clinicians, including the key
+  findings, the reason for escalation, the patient’s context (NYHA class, medications, caregiver), reliability caveats,
+  plain-language ECG and MRI report summaries and visual explanations where available (e.g., uncertainty maps). Chest
+  pain or fainting with a reliable abnormal ECG is an emergency: the patient is told to call 911 if they feel worse,
+  and a clinician must start a video call within 15 minutes.</li>
+  <li><b>Closes the loop.</b> It follows each escalation from creation through clinician acknowledgement, review and
+  resolution, including when a patient is referred to a regional centre and the result must return home. It then
+  confirms that the patient received the instruction, acted on it, and that subsequent readings improved, contacting a
+  caregiver or community health worker when the patient does not respond. A follow-up watch re-checks every case every
+  two hours, identifies stalled cases and sends reminders according to clinician-approved protocols. Patients can also
+  log their sleep and the breathing exercises in their care team’s plan; sleep worse than their own usual opens a
+  routine nurse check-in call, never a clinical alert.</li>
+  <li><b>Investigates equity.</b> It continuously compares model performance, escalation outcomes and time to close the
+  loop across subgroups (e.g., remoteness, sex, age, device, scanner vendor), using confidence intervals. It explores
+  likely causes of any gaps, such as data under-representation, quality differences or shifts in model attention, and
+  recommends safeguards for human approval. Once an administrator approves a safeguard, patients in the affected
+  subgroup receive more conservative escalation and closer follow-up.</li>
+</ul>
+
+<figure>
+<svg viewBox="0 0 720 470" role="img" aria-label="HeartSafe Agent workflow">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#444"/></marker>
+    <marker id="ahb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5b5bd6"/></marker>
+  </defs>
+  <style>
+    .src { fill: #f1f0ec; stroke: #333; stroke-width: 1; }
+    .ai { fill: #e2f3ec; stroke: #2e8b6e; stroke-width: 1; }
+    .ag { fill: #ebebfa; stroke: #5b5bd6; stroke-width: 1; }
+    .t { font-size: 13px; font-weight: 700; fill: #111; text-anchor: middle; }
+    .s { font-size: 10.5px; fill: #333; text-anchor: middle; }
+    .ln { stroke: #444; stroke-width: 1; fill: none; marker-end: url(#ah); }
+    .lb { stroke: #5b5bd6; stroke-width: 1; fill: none; marker-end: url(#ahb); }
+  </style>
+  <!-- sources -->
+  <rect class="src" x="150" y="8" width="160" height="56" rx="5"/>
+  <text class="t" x="230" y="27">Monitoring platform</text>
+  <text class="s" x="230" y="42">(e.g. Medly) daily vitals,</text><text class="s" x="230" y="55">symptoms</text>
+  <rect class="src" x="345" y="14" width="160" height="44" rx="5"/>
+  <text class="t" x="425" y="33">Wearable ECG</text><text class="s" x="425" y="48">Patient at home, rural</text>
+  <rect class="src" x="540" y="14" width="160" height="44" rx="5"/>
+  <text class="t" x="620" y="33">Medical imaging</text><text class="s" x="620" y="48">Scan at regional centre</text>
+  <!-- models -->
+  <rect class="ai" x="345" y="88" width="160" height="44" rx="5"/>
+  <text class="t" x="425" y="107">ECG model</text><text class="s" x="425" y="122">Concerning patterns, rhythm</text>
+  <rect class="ai" x="540" y="88" width="160" height="44" rx="5"/>
+  <text class="t" x="620" y="107">Image segmentation</text><text class="s" x="620" y="122">Cardiac structure, function</text>
+  <path class="ln" d="M425,58 V86"/><path class="ln" d="M620,58 V86"/>
+  <!-- agent frame -->
+  <rect x="128" y="150" width="584" height="214" rx="6" fill="none" stroke="#5b5bd6" stroke-dasharray="5 4"/>
+  <text x="700" y="352" font-size="13" font-weight="700" fill="#5b5bd6" text-anchor="end">HeartSafe Agent</text>
+  <rect class="ag" x="150" y="164" width="550" height="42" rx="5"/>
+  <text class="t" x="425" y="182">Reliability check</text>
+  <text class="s" x="425" y="198">Data quality, signal and image quality, uncertainty, device shift, plausibility</text>
+  <path class="ln" d="M230,64 V162"/><path class="ln" d="M425,132 V162"/><path class="ln" d="M620,132 V162"/>
+  <rect class="ag" x="150" y="228" width="160" height="42" rx="5"/>
+  <text class="t" x="230" y="246">Decision</text><text class="s" x="230" y="262">Accept, repeat, escalate</text>
+  <rect class="ag" x="345" y="228" width="160" height="42" rx="5"/>
+  <text class="t" x="425" y="246">Escalation</text><text class="s" x="425" y="262">Review requests, emergency</text>
+  <rect class="ag" x="540" y="228" width="160" height="42" rx="5"/>
+  <text class="t" x="620" y="246">Closing the loop</text><text class="s" x="620" y="262">Clinician, then patient</text>
+  <path class="ln" d="M230,206 V226"/><path class="ln" d="M310,249 H343"/><path class="ln" d="M505,249 H538"/>
+  <rect class="ag" x="150" y="290" width="250" height="42" rx="5"/>
+  <text class="t" x="275" y="308">Equity investigation</text><text class="s" x="275" y="324">Subgroup gaps, causes, safeguards</text>
+  <!-- people -->
+  <rect class="src" x="205" y="396" width="140" height="44" rx="5"/>
+  <text class="t" x="275" y="415">Administrator</text><text class="s" x="275" y="430">Approves safeguards</text>
+  <rect class="src" x="370" y="390" width="150" height="56" rx="5"/>
+  <text class="t" x="445" y="409">Clinical team</text>
+  <text class="s" x="445" y="424">Nurse verifies,</text><text class="s" x="445" y="437">clinician decides</text>
+  <rect class="src" x="545" y="390" width="160" height="56" rx="5"/>
+  <text class="t" x="625" y="409">Patient, caregiver</text>
+  <text class="s" x="625" y="424">Confirms and acts; logs</text><text class="s" x="625" y="437">sleep and breathing</text>
+  <path class="ln" d="M275,332 V394"/>
+  <path class="ln" d="M620,270 V376 H445 V388"/><path class="ln" d="M620,376 H625 V388"/>
+  <path class="lb" d="M205,418 H100 V185 H148"/>
+  <text x="96" y="296" font-size="9.5" fill="#5b5bd6" text-anchor="end">approved</text>
+  <text x="96" y="308" font-size="9.5" fill="#5b5bd6" text-anchor="end">safeguards</text>
+  <!-- legend -->
+  <rect x="236" y="456" width="9" height="9" fill="#2e8b6e"/><text x="250" y="464" font-size="10" fill="#333">AI models</text>
+  <rect x="320" y="456" width="9" height="9" fill="#5b5bd6"/><text x="334" y="464" font-size="10" fill="#333">Agent tasks</text>
+  <rect x="412" y="456" width="9" height="9" fill="#888"/><text x="426" y="464" font-size="10" fill="#333">Data sources and people</text>
+</svg>
+<figcaption><b>Figure 1:</b> HeartSafe Agent workflow. Platform alerts, wearable ECG (home) and medical imaging
+(regional centre) feed the agent. It checks each result’s reliability, decides whether to accept, repeat or escalate,
+and tracks escalations until a clinician resolves them and the patient has acted. Its equity investigation proposes
+safeguards for administrator approval.</figcaption>
+</figure>
+
+<p><b>Implementation and evaluation.</b> The prototype combines a rule-based agent (reliability checks, case tracker,
+patient loop, follow-up watch and equity monitor) with our existing nnU-Net medical image segmentation pipeline, a
+single-lead ECG classifier and a rhythm model (normal, atrial fibrillation, other). Alert and safety rules were
+reviewed by a practising cardiovascular anesthesiologist and a practising cardiologist, who added diastolic blood
+pressure, oxygen saturation, further symptoms (orthopnea, paroxysmal nocturnal dyspnea, chest pain, syncope),
+diuretic adherence and post-discharge potassium and creatinine, required nurse verification of device changes, and
+defined the emergency level. Reviews are written from templates; an optional LLM can reword them using read-only
+tools, but it cannot change thresholds, severities or actions. We validate the models on public, de-identified
+datasets with demographic and device metadata: PTB-XL for clinical 12-lead ECG subgroup analysis, patient-recorded
+single-lead handheld ECGs from the PhysioNet 2017 Challenge to test device shift, and multi-vendor, multi-centre
+cardiac imaging data (M&amp;Ms). Because platform data are not public, a simulated cohort of 2,000 post-discharge
+patients over 90 days, modelled on Medly’s published inputs, screened with our inclusion criteria and seeded with
+device and entry errors, demonstrates the rural workflow. We evaluated, against the monitoring platform alone:</p>
+<ul>
+  <li>detection of unreliable predictions and of alerts caused by faulty readings: 86% of alerts caused by faulty
+  readings were stopped before reaching a nurse, and the reliability checks caught every injected ECG fault and 92%
+  of injected MRI faults;</li>
+  <li>appropriateness of escalation decisions: every true heart-failure episode was escalated, with 60 instead of 75
+  false alarms per 100 patient-months; 94% of new atrial fibrillation episodes were reported, a median of 2 days after
+  onset;</li>
+  <li>detection of subgroup performance gaps: slower acknowledgement and more unusable ECGs in remote communities, and
+  lower MRI segmentation accuracy on an unseen scanner vendor and in patients aged 60 and over;</li>
+  <li>identification of unresolved cases: 534 of 541 stalled cases were flagged by a reminder, against none without
+  tracking;</li>
+  <li>simulated follow-up completion and patient loop closure: 96% of instructions were completed, against 76% with a
+  single message;</li>
+  <li>simulated time to acknowledgement and to case resolution: a median of 6.7 instead of 12.8 hours to acknowledge a
+  true episode, and 97% instead of 85% of cases resolved within their deadline;</li>
+  <li>extra workload from tighter thresholds and nurse verification: 100 nurse items per 100 patient-months instead of
+  107, including 1.6 scale verifications and 5.3 sleep check-in calls.</li>
+</ul>
+
+<h2>3. Connection to the Hackathon Theme and Canadian Community Impact</h2>
+<p>HeartSafe Agent addresses Theme 4, Challenge 1, by applying agentic AI to more equitable cardiac care. Prior work
+has tackled parts of this problem: quality-control agents for image segmentation (e.g., ARGUS), subgroup-aware
+human–AI decision allocation (e.g., PecMan), and commercial monitoring of deployed imaging AI (e.g., Lattice Health,
+Aival Monitor). HeartSafe Agent unifies trust assessment, equity investigation and closed-loop follow-up across home
+monitoring, wearable and imaging AI, along a single rural care pathway. Because it works on top of platforms already
+used in Canada, such as Medly, TELUS Home Health Monitoring and Cloud DX, it can be added without replacing existing
+care.</p>
+<p>For rural and remote Canadian communities, this means:</p>
+<ul>
+  <li>concerning findings are less likely to be overlooked, and false alarms from faulty readings are caught;</li>
+  <li>scarce specialist and nursing time is directed to the cases that need it;</li>
+  <li>every escalation ends with a confirmed action by the patient, not only a clinician’s note;</li>
+  <li>AI performance gaps affecting specific groups are surfaced rather than hidden.</li>
+</ul>
+<p><b>Responsible AI.</b> The agent never diagnoses, and qualified clinicians make all clinical decisions; a named ECG
+rhythm is reported for confirmation on a 12-lead ECG. Alert rules are reviewed by clinicians, every agent action is
+logged for audit, subgroup performance is reported transparently, and only de-identified public and simulated data are
+used. Public datasets do not record rural or Indigenous status, so extending the equity audit to these groups is
+planned future work. That work would be done with community partners under Indigenous data-governance principles
+(OCAP®).</p>
+<p><b>Scalability.</b> New platforms, sites, devices or cardiac models can be added through a platform adapter and
+local escalation protocols, while the reliability, follow-up and equity layers stay the same. Beyond Canada, heart
+disease is the leading cause of death in Mexico (192,518 deaths in 2024) and in the United States, and rural
+communities across North America can face similar gaps in cardiac follow-up. Where home readings are often poorly
+captured, the data-quality checks matter even more; adapting HeartSafe to these health systems, their connectivity and
+their privacy rules is future work.</p>
+<p>HeartSafe Agent shows how AI agents can move beyond prediction to accountable action, helping close the gap between
+AI innovation and equitable cardiac care in Canada.</p>
+
+<div class="refs">
+<p><i>Statistics:</i> Statistics Canada (2026), heart disease deaths in 2023; Canadian Institute for Health Information
+(2025), median MRI wait times; Anand et al., The Lancet (2001), as cited in Bresee et al., CMAJ (2014), First Nations
+cardiovascular disease prevalence; Tran et al., Circulation: Cardiovascular Quality and Outcomes (2014), rural and
+urban cardiology visits. INEGI (2025), registered deaths in Mexico in 2024; CDC National Center for Health Statistics,
+leading causes of death in the United States.</p>
+<p><i>Platform and population:</i> University of Toronto Institute for Social Innovation (2024), Medly with the
+Weeneebayko Area Health Authority; Sioux Lookout Meno Ya Win Health Centre and Sioux Lookout First Nations Health
+Authority, regional heart-failure care with Medly; Medly post-discharge trial, ClinicalTrials.gov NCT03358303
+(inclusion and exclusion criteria).</p>
+<p><i>Datasets and methods:</i> PTB-XL (Wagner et al., Scientific Data, 2020); PhysioNet 2017 Challenge (Clifford et
+al., Computing in Cardiology, 2017); M&amp;Ms (Campello et al., IEEE Transactions on Medical Imaging, 2021); nnU-Net
+(Isensee et al., Nature Methods, 2021).</p>
+</div>
+</body>
+</html>

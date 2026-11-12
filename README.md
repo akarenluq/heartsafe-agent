@@ -12,7 +12,7 @@ closes a case, changes a treatment or calls 911 on its own.
 ![A short tour of the HeartSafe dashboard](docs/demo/heartsafe-tour.gif)
 
 > **Demo video (3 min, captioned):** [docs/demo/heartsafe-demo.mp4](docs/demo/heartsafe-demo.mp4).
-> To play it inline here, see [Demo video](#demo-video).
+> To play it inline here, see [Demo video](#demo-video). **Abstract:** [docs/HeartSafe_Agent_Abstract.pdf](docs/HeartSafe_Agent_Abstract.pdf).
 
 <!-- DEMO VIDEO: drag docs/demo/heartsafe-demo.mp4 into this README in GitHub's web editor and paste the
      generated https://github.com/user-attachments/... link on the line below, then delete this comment. -->
@@ -366,7 +366,7 @@ On a Slurm cluster (SDRE or Alliance):
 | `agent/` | Platform adapter, reliability layer, rhythm and heart-rate findings, reviews, case tracker, patient loop, sleep and breathing log, equity monitor, evaluation, dashboard ([README](agent/README.md)) |
 | `ecg/` | Single-lead ECG classifier (PTB-XL lead I), ECG reliability, PhysioNet/CinC 2017 device-shift test, rhythm model; trained weights in `ecg/models/` |
 | `imaging/` | Cardiac MRI segmentation (nnU-Net, M&Ms), volumes and EF, imaging reliability, imaging equity audit ([README](imaging/README.md)) |
-| `docs/demo/` | Screenshots, the demo video and GIF, and the scripts that record them |
+| `docs/` | The project abstract ([PDF](docs/HeartSafe_Agent_Abstract.pdf), source in `docs/abstract/`); in `docs/demo/`, the screenshots, demo video and GIF, and the scripts that record them |
 | `course/` | An interactive course that explains the codebase (open `course/index.html`) |
 | `plans/` | Execution plan |
 
