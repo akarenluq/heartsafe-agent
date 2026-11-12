@@ -1,0 +1,32 @@
+{
+  "member_0": {
+    "best_val_auroc": 0.8855,
+    "best_epoch": 13,
+    "epochs": 30,
+    "minutes": 0.4
+  },
+  "member_1": {
+    "best_val_auroc": 0.8872,
+    "best_epoch": 18,
+    "epochs": 30,
+    "minutes": 0.4
+  },
+  "member_2": {
+    "best_val_auroc": 0.8858,
+    "best_epoch": 7,
+    "epochs": 30,
+    "minutes": 0.4
+  },
+  "member_3": {
+    "best_val_auroc": 0.8865,
+    "best_epoch": 10,
+    "epochs": 30,
+    "minutes": 0.4
+  },
+  "member_4": {
+    "best_val_auroc": 0.8849,
+    "best_epoch": 12,
+    "epochs": 30,
+    "minutes": 0.4
+  }
+}

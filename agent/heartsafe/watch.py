@@ -37,6 +37,8 @@ def followup_status(case, tracker, now):
     """Where one case stands at time `now` (hours): a dict and plain-English lines for the review."""
     audit = [a for a in tracker.audit(case["case_id"]) if a["t_h"] <= now]
     done = {a["action"]: a["t_h"] for a in audit if a["role"] == "clinician"}
+    if "emergency_decision" in done:  # an emergency is closed by the video-call decision (call 911 or cancel)
+        done.setdefault("resolve", done["emergency_decision"])
     state = ("resolved" if "resolve" in done else "reviewed" if "review" in done else
              "acknowledged" if "acknowledge" in done else "created")
     reminders = [a for a in audit if a["action"] == "reminder"]
@@ -56,7 +58,8 @@ def followup_status(case, tracker, now):
             issues.append("resolve_overdue")
             lines.append(f"The resolution deadline passed {_h(now - case['resolve_deadline_h'])} ago.")
     else:
-        note = next((json.loads(a["detail"]).get("note") for a in audit if a["action"] == "resolve" and a["detail"]), "")
+        note = next((json.loads(a["detail"]).get("note") for a in audit if a["action"] == "resolve" and a["detail"]),
+                    "") or (case.get("outcome") or "" if "emergency_decision" in done else "")
         lines.append(f"Resolved {_h(now - done['resolve'])} ago" + (f": {note}" if note else "."))
     if reminders:
         to = json.loads(reminders[-1]["detail"] or "{}").get("to", "primary")
