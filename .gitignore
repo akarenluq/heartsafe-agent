@@ -14,3 +14,8 @@ imaging/slurm/site.env
 agent/data/
 .venv/
 .pytest_cache/
+# the MRI model is committed as one zip through Git LFS; the unzipped copy stays local
+imaging/models/Dataset201_HeartSafeMNMs/
+# demo recordings made with docs/demo/record_demo.py
+docs/demo/demo_data/
+docs/demo/new_recording/

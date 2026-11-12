@@ -1,0 +1,17 @@
+{
+  "member_0": {
+    "best_val_macro_auroc": 0.899,
+    "best_epoch": 16,
+    "minutes": 0.5
+  },
+  "member_1": {
+    "best_val_macro_auroc": 0.9001,
+    "best_epoch": 20,
+    "minutes": 0.5
+  },
+  "member_2": {
+    "best_val_macro_auroc": 0.8991,
+    "best_epoch": 21,
+    "minutes": 0.5
+  }
+}
