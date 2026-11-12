@@ -140,6 +140,19 @@ def test_followup_watch_finds_overdue_cases_and_unconfirmed_loops():
     assert any("caregiver" in line for line in followup_status(tr.get(done), tr, 21)["lines"])
 
 
+def test_followup_watch_counts_an_emergency_decision_as_resolved():
+    """An emergency is closed by the video-call decision, not by "resolve": the watch must agree with the case."""
+    tr = Tracker()
+    em = tr.create("P1", "clinical", "emergency", 0, 0.25, 1, {"x": 1})
+    tr.act(em, "acknowledge", 0.2, "n", "clinician", "video call started")
+    tr.emergency_decision(em, 0.5, "n", "clinician", "call_911", "symptoms ongoing")
+    s = followup_status(tr.get(em), tr, 100)
+    assert tr.get(em)["state"] == s["state"] == "resolved" and s["issues"] == []
+    assert "called 911" in " ".join(s["lines"])
+    assert Watcher(tr, CFG).tick(100, act=True) == []
+    assert "reminder" not in [a["action"] for a in tr.audit(em)]             # no reminder for a closed emergency
+
+
 def test_ecg_and_mri_summaries_without_llm():
     ecg = {"reliable": False, "action": "repeat", "abnormal": True, "prob": 0.91, "quality": 0.3,
            "uncertainty": 0.2, "reasons": ["noisy signal"]}
