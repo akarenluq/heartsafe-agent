@@ -119,10 +119,119 @@ def ecg_recordings(decisions):
     if "ecg_checked" not in decisions:
         return {}
     e = decisions[decisions.ecg_checked.fillna(False).astype(bool)]
-    no_alert = e[e.decision.isin(["ecg_ok", "ecg_repeat", "ecg_noted"])]
+    no_alert = e[e.decision.isin(["ecg_ok", "ecg_repeat", "ecg_noted", "ecg_new_af", "ecg_known_af"])]
     return {"recordings_checked": int(len(e)), "on_days_without_alert": int(len(no_alert)),
             "repeat_requested_without_alert": int((no_alert.decision == "ecg_repeat").sum()),
-            "abnormal_noted_without_alert": int((no_alert.decision == "ecg_noted").sum())}
+            "abnormal_noted_without_alert": int((no_alert.decision == "ecg_noted").sum()),
+            "new_af_reported_without_alert": int((no_alert.decision == "ecg_new_af").sum()),
+            "known_af_logged_without_alert": int((no_alert.decision == "ecg_known_af").sum())}
+
+
+def _spells(feed, col):
+    """First and last day of each patient's spell in a true/false ground-truth column."""
+    f = feed[feed[col].fillna(False).astype(bool)]
+    return f.groupby("patient_id").day.agg(start="min", end="max").reset_index()
+
+
+def rhythm(feed, patients, decisions):
+    """Named ECG findings: new atrial fibrillation reported to the care team, known atrial
+    fibrillation logged, and heart rates on the ECG outside the patient's limits."""
+    if "ecg_af" not in decisions or "ecg_checked" not in decisions:
+        return {}
+    e = decisions[decisions.ecg_checked.fillna(False).astype(bool)]
+    ok = e[e.ecg_reliable.astype(bool)]
+    new = e[e.ecg_af == "new"]
+    flags = e["flags"].fillna("") if "flags" in e else pd.Series("", index=e.index)
+    out = {"reliable_recordings": int(len(ok)),
+           "recordings_named_af": int((ok.ecg_rhythm == "af").sum()),
+           "known_af_recordings_not_escalated_as_new": int((e.ecg_af == "known").sum()),
+           "new_af_reports": int(len(new)),
+           "new_af_report_severity": new.severity.value_counts().to_dict(),
+           "raised_to_critical_when_symptoms_followed": int(((e.ecg_af == "reported")
+                                                             & flags.str.contains("ecg_new_af")).sum()),
+           "later_af_recordings_already_reported": int((e.ecg_af == "reported").sum()),
+           "bradycardia_on_ecg": int((e.ecg_rate == "bradycardia").sum()),
+           "tachycardia_on_ecg": int((e.ecg_rate == "tachycardia").sum())}
+    if "emergency_decision" in e:  # the unchanged emergency rule in patients whose ECG always shows AF
+        em = e[(e.decision == "emergency") & (e.ecg_af == "known")]
+        out["emergencies_where_the_ecg_finding_was_known_af"] = {
+            "cases": int(len(em)), "of_all_emergencies": int((e.decision == "emergency").sum()),
+            "clinician_cancelled": int((em.emergency_decision == "cancel").sum())}
+    known_sym = e[(e.ecg_af == "known") & e.decision.isin(["escalate", "escalate_update"])
+                  & (e.severity == "caution")]
+    out["caution_alerts_with_known_af_on_ecg_not_raised"] = int(len(known_sym))
+    if "gt_ecg_rhythm" in e:
+        true_af = ok.gt_ecg_rhythm == "af"
+        out["af_named_on_reliable_af_recordings"] = round(float((ok.ecg_rhythm[true_af] == "af").mean()), 3) \
+            if true_af.any() else None
+        out["new_af_reports_on_a_recording_without_af"] = int((new.gt_ecg_rhythm != "af").sum())
+    rated = e[e.ecg_rate.notna() & e.decision.isin(["escalate", "escalate_update", "emergency"])]
+    out["alerts_with_the_rate_confirmed_on_the_ecg"] = {"alerts": int(len(rated)),
+                                                        "critical_or_emergency": int(rated.severity.isin(
+                                                            ["critical", "emergency"]).sum())}
+    if "gt_rate" in feed:
+        kit = set(patients[patients.ecg_kit.astype(bool)].patient_id)
+        f = feed[feed.gt_rate.isin(["slow", "fast"]) & feed.patient_id.isin(kit)]
+        sp = f.groupby("patient_id").agg(start=("day", "min"), end=("day", "max"), kind=("gt_rate", "first"))
+        seen = e[e.ecg_rate.notna()]
+        hit = [bool(((seen.patient_id == pid) & (seen.day >= s.start) & (seen.day <= s.end)).any())
+               for pid, s in sp.iterrows()]
+        out["heart_rate_spells_in_patients_with_ecg_kit"] = sp.kind.value_counts().to_dict()
+        out["heart_rate_spells_confirmed_on_the_ecg"] = round(float(np.mean(hit)), 3) if hit else None
+    if "gt_new_af" in feed:
+        sp = _spells(feed, "gt_new_af")
+        sp = sp[sp.patient_id.isin(patients[patients.ecg_kit.astype(bool)].patient_id)]
+        days = []
+        for s in sp.itertuples():
+            d = new[(new.patient_id == s.patient_id) & (new.day >= s.start) & (new.day <= s.end)].day
+            days.append(d.min() - s.start if len(d) else np.nan)
+        days = pd.Series(days, dtype=float)
+        out.update({"new_af_spells_in_patients_with_ecg_kit": int(len(sp)),
+                    "spells_reported_to_care_team": round(float(days.notna().mean()), 3) if len(days) else None,
+                    "median_days_onset_to_report": round(float(days.median()), 1) if days.notna().any() else None})
+    return out
+
+
+def selfcare(feed, decisions, cases, patient_months, ep_idx, cfg=None):
+    """Sleep log and breathing exercises: check-in calls opened for worse sleep, what was behind
+    them in the simulated world, and breathing sessions against the care team's plan."""
+    if "sleep_hours" not in feed or not feed.sleep_hours.notna().any():
+        return {}
+    d = decisions[decisions.decision.isin(["sleep_check", "sleep_noted"])]
+    sc = cases[cases.kind == "sleep_check"]
+    out = {"nights_logged": int(feed.sleep_hours.notna().sum()),
+           "median_sleep_h": round(float(feed.sleep_hours.median()), 1),
+           "sleep_checkins": int((d.decision == "sleep_check").sum()),
+           "notes_added_to_open_case": int((d.decision == "sleep_noted").sum()),
+           "patients_with_a_checkin": int(d.patient_id.nunique()),
+           "checkins_per_100_patient_months": round(100 * len(sc) / patient_months, 1),
+           "median_hours_to_checkin_call": round(float((sc.acknowledged_h - sc.created_h).median()), 1)
+           if sc.acknowledged_h.notna().any() else None}
+    if "gt_poor_sleep" in feed:
+        poor = {(r.patient_id, r.day) for r in feed[feed.gt_poor_sleep.fillna(False).astype(bool)].itertuples()}
+
+        def why(r):
+            nights = [(r.patient_id, x) for x in range(int(r.day) - 2, int(r.day) + 1)]
+            return "poor-sleep spell" if any(n in poor for n in nights) else \
+                "decompensation or new atrial fibrillation" if any(ep_idx.get(n, False) for n in nights) else \
+                "a few short nights in a row"
+        out["what_was_behind_them"] = pd.Series([why(r) for r in d.itertuples()], dtype=object) \
+            .value_counts().to_dict()
+        sp = _spells(feed, "gt_poor_sleep")
+        hit = [bool(((d.patient_id == s.patient_id) & (d.day >= s.start) & (d.day <= s.end + 2)).any())
+               for s in sp.itertuples()]
+        out["poor_sleep_spells"] = int(len(sp))
+        out["spells_with_checkin_or_note"] = round(float(np.mean(hit)), 3) if hit else None
+    if "breathing_sessions" in feed and feed.breathing_sessions.notna().any():
+        plan = ((cfg or {}).get("selfcare") or {}).get("breathing", {}).get("sessions_per_day")
+        b = feed[feed.breathing_sessions.notna()]
+        per_patient = b.groupby("patient_id").breathing_sessions.mean()
+        out["breathing"] = {"plan_sessions_per_day": plan,
+                            "mean_sessions_per_day": round(float(b.breathing_sessions.mean()), 2)}
+        if plan:
+            out["breathing"]["days_meeting_plan"] = round(float((b.breathing_sessions >= plan).mean()), 3)
+            out["breathing"]["patients_below_half_plan"] = round(float((per_patient < plan / 2).mean()), 3)
+    return out
 
 
 def patient_loop(loops, patients, horizon_h):
@@ -157,9 +266,16 @@ def patient_loop(loops, patients, horizon_h):
     }
 
 
-def evaluate(feed, patients, decisions, cases, baseline, horizon_h, rules=None, followup_cfg=None, loops=None):
+def evaluate(feed, patients, decisions, cases, baseline, horizon_h, rules=None, followup_cfg=None, loops=None,
+             cfg=None):
     patient_months = len(patients) * (feed.day.max() + 1) / 30.0
-    ep_idx = {(r.patient_id, r.day): r.gt_episode for r in feed[["patient_id", "day", "gt_episode"]].itertuples()}
+    # a true event = a decompensation episode, a first spell of atrial fibrillation, or a heart rate
+    # truly outside the patient's limits
+    event = feed.gt_episode.astype(bool) | (feed.gt_new_af.fillna(False).astype(bool) if "gt_new_af" in feed
+                                            else False)
+    if "gt_rate" in feed:
+        event = event | feed.gt_rate.isin(["slow", "fast"])
+    ep_idx = dict(zip(zip(feed.patient_id, feed.day), event))
     eps = episodes(feed)
     eps = eps[eps.first_alert_h.notna()]
     cases = cases.copy()
@@ -168,7 +284,7 @@ def evaluate(feed, patients, decisions, cases, baseline, horizon_h, rules=None, 
 
     # Episode-level: did a clinician acknowledge, and how fast after the platform's first alert?
     rows = []
-    esc = decisions[decisions.decision.isin(["escalate", "escalate_update", "emergency"])]
+    esc = decisions[decisions.decision.isin(["escalate", "escalate_update", "emergency", "ecg_new_af"])]
     for e in eps.itertuples():
         d = esc[(esc.patient_id == e.patient_id) & (esc.day >= e.start - 1) & (esc.day <= e.end)]
         ack_a = clinical[clinical.case_id.isin(d.case_id)].acknowledged_h.min() if len(d) else np.nan
@@ -188,13 +304,15 @@ def evaluate(feed, patients, decisions, cases, baseline, horizon_h, rules=None, 
         feed[(feed.alert_level > 0) & (feed.gt_fault != "none") & (~feed.gt_episode)][["patient_id", "day"]]
     # one decision per alert day: leave out records that are not a reply to the day's alert
     # (nurse-confirmed scale, imaging results), which can share a day with it
-    alert_dec = decisions[~decisions.decision.isin(["scale_verified", "imaging_accept", "imaging_review"])]
+    alert_dec = decisions[~decisions.decision.isin(["scale_verified", "imaging_accept", "imaging_review",
+                                                    "sleep_check", "sleep_noted"])]
     alert_dec = alert_dec.drop_duplicates(["patient_id", "day"], keep="last")
     fa = fa.merge(alert_dec[["patient_id", "day", "decision"]], on=["patient_id", "day"], how="left")
     stopped = fa.decision.isin(["repeat", "filtered"]).mean() if len(fa) else np.nan
     held = fa.decision.isin(["nurse_verify", "nurse_verify_update"]).mean() if len(fa) else np.nan
     scale_checks = cases[cases.kind == "scale_check"]
     followups = cases[cases.kind == "patient_followup"]
+    sleep_checks = cases[cases.kind == "sleep_check"]
 
     def share_within(x, h):
         return float(np.mean(np.nan_to_num(x, nan=np.inf) <= h)) if len(x) else np.nan
@@ -231,6 +349,7 @@ def evaluate(feed, patients, decisions, cases, baseline, horizon_h, rules=None, 
             "heartsafe_clinical_cases": round(100 * len(clinical) / patient_months, 1),
             "heartsafe_nurse_verifications": round(100 * len(scale_checks) / patient_months, 1),
             "heartsafe_patient_followups": round(100 * len(followups) / patient_months, 1),
+            "heartsafe_sleep_checkins": round(100 * len(sleep_checks) / patient_months, 1),
             "platform_alone_alert_items": round(100 * len(baseline) / patient_months, 1),
             "false_alarms_heartsafe": round(100 * false_agent / patient_months, 1),
             "false_alarms_platform_alone": round(100 * false_platform / patient_months, 1)},
@@ -240,6 +359,8 @@ def evaluate(feed, patients, decisions, cases, baseline, horizon_h, rules=None, 
         "model_evidence": model_evidence(decisions),
         "emergencies": emergencies(decisions, cases, ep_idx),
         "ecg_recordings": ecg_recordings(decisions),
+        "rhythm": rhythm(feed, patients, decisions),
+        "selfcare": selfcare(feed, decisions, cases, patient_months, ep_idx, cfg),
         "patient_loop": patient_loop(loops, patients, horizon_h),
         "followup": {
             "cases": int(len(cases)), "reminders_sent": int(cases.reminders.sum()),

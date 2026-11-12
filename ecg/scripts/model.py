@@ -1,4 +1,5 @@
-"""Small 1D ResNet for single-lead ECG. Returns (logit, embedding)."""
+"""Small 1D ResNet for single-lead ECG. Returns (logit, embedding).
+n_out=1: normal vs abnormal (one logit). n_out=3: rhythm (normal / atrial fibrillation / other abnormal)."""
 import numpy as np
 import torch
 import torch.nn as nn
@@ -20,18 +21,20 @@ class Block(nn.Module):
 
 
 class ECGNet(nn.Module):
-    def __init__(self, dropout=0.2, width=32):
+    def __init__(self, dropout=0.2, width=32, n_out=1):
         super().__init__()
         w = width
         self.stem = nn.Sequential(nn.Conv1d(1, w, 15, 2, 7, bias=False), nn.BatchNorm1d(w), nn.ReLU(),
                                   nn.MaxPool1d(3, 2, 1))
         self.blocks = nn.Sequential(Block(w, w, 1), Block(w, 2 * w, 2), Block(2 * w, 4 * w, 2), Block(4 * w, 4 * w, 2))
         self.drop = nn.Dropout(dropout)
-        self.fc = nn.Linear(4 * w, 1)
+        self.n_out = n_out
+        self.fc = nn.Linear(4 * w, n_out)
 
     def forward(self, x):
         emb = self.blocks(self.stem(x)).mean(-1)
-        return self.fc(self.drop(emb)).squeeze(1), emb
+        out = self.fc(self.drop(emb))
+        return (out.squeeze(1) if self.n_out == 1 else out), emb
 
 
 @torch.no_grad()

@@ -99,20 +99,26 @@ def main(argv=None):
         mri_pool = load_outputs(args.imaging or DEFAULT_POOLS["imaging"])
     print(f"model outputs: ECG {len(ecg_pool) or 'simulated'}, MRI {len(mri_pool) or 'simulated'}")
 
-    db = out / "heartsafe.db"
-    if db.exists():
-        db.unlink()
-    tr = Tracker(db)
+    # Built in memory and copied over heartsafe.db at the end: this also works while the dashboard
+    # has the file open (deleting an open file fails on Windows).
+    tr = Tracker()
     truth = {(r.patient_id, r.day): bool(r.gt_episode) for r in feed.itertuples()} if "gt_episode" in feed else {}
     scale_truth = {(r.patient_id, r.day) for r in feed[feed.gt_fault == "scale_change"].itertuples()} \
         if "gt_fault" in feed else None
+    # the simulated world's true rhythm: "af" in a patient with known AF, "new_af" in a first spell
+    rhythm_truth = {(r.patient_id, r.day): "new_af" if r.gt_new_af else "af"
+                    for r in feed[feed.gt_rhythm == "af"].itertuples()} if "gt_rhythm" in feed else {}
+    if "gt_rate" in feed:  # a heart rate truly outside the limits: another abnormal rhythm on the ECG
+        for r in feed[feed.gt_rate.isin(["slow", "fast"])].itertuples():
+            rhythm_truth.setdefault((r.patient_id, r.day), "rate")
     seed = cfg["cohort"]["seed"] if args.seed is None else args.seed
     agent = HeartSafeAgent(cfg, patients, tr, np.random.default_rng(seed + 1), horizon,
                            ecg_pool=ecg_pool, mri_pool=mri_pool, safeguards=safeguards, truth=truth,
-                           scale_truth=scale_truth)
+                           scale_truth=scale_truth, rhythm_truth=rhythm_truth)
     observable = PlatformAdapter(feed).observable()
     decisions = agent.run(observable)
     tr.commit()
+    tr.save_to(out / "heartsafe.db")
     baseline = run_baseline(observable, patients, cfg, np.random.default_rng(seed + 2), horizon)
     cases = pd.DataFrame(tr.cases()).merge(pd.DataFrame(agent.gt_cases), on="case_id", how="left")
     loops = pd.DataFrame(tr.loops())
@@ -131,7 +137,7 @@ def main(argv=None):
 
     if "gt_episode" in feed:
         res, er = evaluate(feed, patients, decisions, cases, baseline, horizon, cfg["alert_rules"], cfg["followup"],
-                           loops=loops)
+                           loops=loops, cfg=cfg)
         res["safeguards_applied"] = [s["id"] for s in safeguards if s.get("approved")]
         res["sources"] = {"ecg": "pipeline outputs" if ecg_pool else "simulated",
                           "mri": "imaging pipeline outputs" if mri_pool else "simulated"}
@@ -154,7 +160,8 @@ def main(argv=None):
     print(f"cases {len(cases)} (open at end {(cases.state != 'resolved').sum()}), reminders {cases.reminders.sum()}")
     if "gt_episode" in feed:
         print(json.dumps({k: res[k] for k in ("true_episodes", "fault_driven_alerts",
-                                              "nurse_queue_per_100_patient_months")}, indent=2, default=float))
+                                              "nurse_queue_per_100_patient_months", "rhythm", "selfcare")
+                          if k in res}, indent=2, default=float))
     print(f"equity gaps: {int(eq.gap.sum())}; proposals: {[p['id'] for p in proposals]}")
     print(f"outputs -> {out}")
 

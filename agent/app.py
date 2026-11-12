@@ -9,9 +9,12 @@ import pandas as pd
 import streamlit as st
 
 from heartsafe import DATA, load_config
+from heartsafe.agent import checkin_from_sleep_log
 from heartsafe.monitoring import SYMPTOM_TEXT
 from heartsafe.orchestrator import orchestrate
 from heartsafe.review import patient_evidence, summarize_ecg, summarize_mri
+from heartsafe.selfcare import KEPT_AWAKE, SelfCareLog, breathing_status, sleep_status, with_logged
+from heartsafe.selfcare import describe as describe_selfcare
 from heartsafe.tracker import PermissionDenied, Tracker
 from heartsafe.watch import Watcher, followup_status
 
@@ -77,7 +80,7 @@ section[data-testid="stSidebar"] {width: 260px !important;}
 SEV_LABEL = {"emergency": "🚨 Emergency", "critical": "🔴 Critical", "caution": "🟡 Caution", "low": "⚪ Low"}
 SEV_ORDER = {"emergency": -1, "critical": 0, "caution": 1, "low": 2}
 KIND_LABEL = {"clinical": "Clinical", "outreach": "Missed readings", "scale_check": "Scale check",
-              "imaging": "MRI review", "patient_followup": "Patient follow-up"}
+              "imaging": "MRI review", "patient_followup": "Patient follow-up", "sleep_check": "Sleep check-in"}
 STATE_LABEL = {"created": "Waiting for acknowledgement", "acknowledged": "Acknowledged", "reviewed": "Reviewed",
                "resolved": "Resolved"}
 DECISION = {  # what HeartSafe did with a platform alert: (plain words, group for the chart)
@@ -99,6 +102,10 @@ DECISION = {  # what HeartSafe did with a platform alert: (plain words, group fo
     "ecg_ok": ("ECG checked: no abnormality", "ECG checked"),
     "ecg_repeat": ("ECG not usable: patient asked to record it again", "Data issue handled"),
     "ecg_noted": ("Abnormal ECG with no alert: added to the chart", "ECG checked"),
+    "ecg_new_af": ("New atrial fibrillation on the ECG: reported to the care team", "Escalated to the care team"),
+    "ecg_known_af": ("ECG checked: known atrial fibrillation, not a new finding", "ECG checked"),
+    "sleep_check": ("Sleep worse than usual: check-in call for the nurse", "Follow-up and patient loop"),
+    "sleep_noted": ("Sleep worse than usual: added to the open case", "Follow-up and patient loop"),
 }
 GROUPS = alt.Scale(domain=["Escalated to the care team", "Data issue handled", "Follow-up and patient loop"],
                    range=[BLUE, ORANGE, AQUA])
@@ -159,10 +166,47 @@ def tracker():
     return Tracker(DATA / "heartsafe.db")
 
 
-tr = tracker()
+@st.cache_resource
+def selfcare_log():
+    return SelfCareLog(DATA / "selfcare.db")  # its own file: a cohort re-run does not erase it
+
+
+tr, sc_log = tracker(), selfcare_log()
 feed, patients, decisions = load("feed.csv"), load("patients.csv"), load("decisions.csv")
 now = load("run_info.json")["horizon_h"]
+TODAY = int(now // 24)  # the morning the patient logs last night's sleep
 EVERY_H = cfg["followup"]["watch_every_h"]
+MEASURES = {"Weight": "weight_kg", "Blood pressure": "sbp", "Heart rate": "hr",
+            **({"Sleep": "sleep_hours"} if "sleep_hours" in feed.columns else {})}
+SELFCARE_COLS = [c for c in ("sleep_hours", "sleep_awakenings", "breathing_sessions") if c in feed.columns]
+
+
+def selfcare_history(pid, upto_day=None):
+    """The patient's last 14 days of platform readings with the entries logged in the app merged
+    in, oldest first."""
+    f = feed[(feed.patient_id == pid) & feed.submitted]
+    if upto_day is not None:
+        f = f[f.day <= upto_day]
+    hist = with_logged(f[["day", "weight_kg", "sbp", "hr"] + SELFCARE_COLS].tail(14).to_dict("records"),
+                       sc_log.days(pid))
+    return [h for h in hist if upto_day is None or h["day"] <= upto_day]
+
+
+def logged_table(pid):
+    """What the patient side logged in the app, newest first, in plain words."""
+    rows = []
+    for e in reversed(sc_log.entries(pid)):
+        x = e["detail"]
+        if e["kind"] == "sleep":
+            what = (f"Slept {x['hours']:g} h, woke {x['awakenings']} time{'' if x['awakenings'] == 1 else 's'}"
+                    + ("; slept propped up (short of breath lying flat)" if x["propped_up"] else "")
+                    + ("; woke up short of breath" if x["woke_breathless"] else "")
+                    + (f"; kept awake by: {', '.join(x['kept_awake'])}" if x["kept_awake"] else ""))
+        else:
+            what = f"{x['exercise']}, {x['minutes']:g} min"
+        rows.append({"Day": e["day"], "Entry": "Sleep" if e["kind"] == "sleep" else "Breathing exercise",
+                     "Details": what, "Logged by": f"{e['actor']} ({e['role'].replace('_', ' ')})"})
+    return pd.DataFrame(rows)
 
 
 @st.cache_data(ttl=EVERY_H * 3600)
@@ -175,21 +219,28 @@ with st.sidebar:
     st.markdown('<p class="hs-brand"><span style="color:#d03b3b">&#9829;</span> HeartSafe</p>'
                 '<p class="hs-brand-sub">Safety and follow-up layer for remote heart-failure monitoring</p>',
                 unsafe_allow_html=True)
-    role = st.selectbox("Signed in as", ["clinician", "administrator"], format_func=str.capitalize)
-    user = st.text_input("Name", "nurse_demo" if role == "clinician" else "admin_demo")
+    role = st.selectbox("Signed in as", ["clinician", "administrator", "patient"], format_func=str.capitalize)
+    if role == "patient":
+        user = st.selectbox("Patient", ["DEMO-MARY"] + sorted(p for p in patients.patient_id if p != "DEMO-MARY"),
+                            format_func=lambda p: "DEMO-MARY · demo patient" if p == "DEMO-MARY" else p)
+    else:
+        user = st.text_input("Name", "nurse_demo" if role == "clinician" else "admin_demo")
     st.markdown(f'<div class="hs-clock">Simulation clock: {day(now)}<br>Simulated data, modelled on Medly</div>',
                 unsafe_allow_html=True)
 
 
 # ---- one case -----------------------------------------------------------------------------------
 def vitals_chart(pid, upto_day=None, window=21, measure="weight_kg"):
-    titles = {"weight_kg": "Weight (kg)", "sbp": "Systolic BP (mmHg)", "hr": "Heart rate (bpm)"}
+    titles = {"weight_kg": "Weight (kg)", "sbp": "Systolic BP (mmHg)", "hr": "Heart rate (bpm)",
+              "sleep_hours": "Sleep (hours a night)"}
     f = feed[(feed.patient_id == pid) & feed.submitted]
     if upto_day is not None:
         f = f[(f.day <= upto_day) & (f.day > upto_day - window)]
+    f = f[f[measure].notna()]
     d = decisions[decisions.patient_id == pid].copy()
     d["action"] = d.decision.map(lambda x: DECISION.get(x, (x, ""))[0])
     d["group"] = d.decision.map(lambda x: DECISION.get(x, ("", "Follow-up and patient loop"))[1])
+    d = d[d.group.isin(GROUPS.domain)]  # routine ECG checks are in the table, not on the chart
     d = d.merge(f[["day", measure]], on="day").drop_duplicates("day", keep="first")
     x = alt.X("day:Q", title="Day of monitoring")
     line = alt.Chart(f).mark_line(color=MUTED, strokeWidth=2).encode(
@@ -287,15 +338,18 @@ def show_case(case):
             if other:
                 label("Data-quality notes")
                 text("<br>".join(f"• {c}" for c in other))
+            if describe_selfcare(review.get("selfcare")):
+                label("Sleep and breathing (logged by the patient)")
+                text(describe_selfcare(review["selfcare"]))
             label("Suggested next step")
             st.info(review["next_step"])
             st.caption("HeartSafe does not make the clinical decision; the clinical team does.")
         with right:
-            m = st.segmented_control("Measure", ["Weight", "Blood pressure", "Heart rate"], default="Weight",
+            first = "Sleep" if case["kind"] == "sleep_check" and "Sleep" in MEASURES else "Weight"
+            m = st.segmented_control("Measure", list(MEASURES), default=first,
                                      key=f"m{case['case_id']}", label_visibility="collapsed")
-            col = {"Weight": "weight_kg", "Blood pressure": "sbp", "Heart rate": "hr"}[m or "Weight"]
-            st.altair_chart(style(vitals_chart(case["patient_id"], review["day"], measure=col), 240),
-                            width="stretch")
+            st.altair_chart(style(vitals_chart(case["patient_id"], review["day"], measure=MEASURES[m or first]),
+                                  240), width="stretch")
         if cfg["review"].get("llm_enabled") and st.button(
                 "Explain with AI agent", key=f"llm{case['case_id']}",
                 help="Optional: Claude calls read-only tools over this case and rewords the review."):
@@ -419,12 +473,9 @@ def page_patient():
                "enrollment")
 
     with st.container(border=True):
-        m = st.segmented_control("Measure", ["Weight", "Blood pressure", "Heart rate"], default="Weight",
-                                 key="pj_measure")
-        col = {"Weight": "weight_kg", "Blood pressure": "sbp", "Heart rate": "hr"}[m or "Weight"]
-        st.altair_chart(style(vitals_chart(pid, measure=col), 280), width="stretch")
-        st.caption("Gray line: daily readings. Coloured dots: days HeartSafe acted on a platform alert "
-                   "(hover for details).")
+        m = st.segmented_control("Measure", list(MEASURES), default="Weight", key="pj_measure")
+        st.altair_chart(style(vitals_chart(pid, measure=MEASURES[m or "Weight"]), 280), width="stretch")
+        st.caption("Gray line: daily readings. Coloured dots: days HeartSafe acted (hover for details).")
 
     left, right = st.columns([2, 3], gap="large")
     with left:
@@ -441,6 +492,17 @@ def page_patient():
         st.dataframe(pd.DataFrame({"Day": acted.day, "Platform alert": acted.alert_rules.fillna("—"),
                                    "HeartSafe": acted.decision.map(lambda x: DECISION.get(x, (x,))[0])}),
                      hide_index=True, width="stretch", height=min(36 * len(acted) + 40, 320))
+
+    hist = selfcare_history(pid)
+    sc = describe_selfcare({"sleep": sleep_status(hist, None, cfg), "breathing": breathing_status(hist, None, cfg)})
+    logged = logged_table(pid)
+    if sc or len(logged):
+        st.subheader("Sleep and breathing (logged by the patient)")
+        text(sc or "No sleep or breathing entries from the platform.")
+        if len(logged):
+            st.dataframe(logged, hide_index=True, width="stretch", height=min(36 * len(logged) + 40, 220))
+            st.caption("Entries from the patient's Sleep and breathing page. Worse sleep alone is a routine check-in "
+                       "call, never a clinical alert.")
 
     st.subheader(f"Cases ({len(pcases)})")
     for case in pcases:
@@ -567,7 +629,87 @@ def page_results():
                     f"{(pl['heartsafe_action_done'] - pl['platform_alone_action_done']) * 100:+.0f} pts",
                     help="Compared with one message and no follow-up")
 
-    t1, t2, t3, t4 = st.tabs(["Speed and follow-up", "Patient loop", "Model evidence", "Assumptions and raw data"])
+    t1, t2, t_rh, t_sc, t3, t4 = st.tabs(["Speed and follow-up", "Patient loop", "Heart rhythm", "Sleep and breathing",
+                                          "Model evidence", "Assumptions and raw data"])
+    with t_rh:
+        rh = r.get("rhythm")
+        if not rh:
+            st.info("No rhythm results in this run. Re-run the cohort:  python -m heartsafe.run")
+        else:
+            c = st.columns(4)
+            c[0].metric("New AF spells reported", f"{rh['spells_reported_to_care_team']:.0%}",
+                        help=f"{rh['new_af_spells_in_patients_with_ecg_kit']} first spells of atrial fibrillation in "
+                             "patients who have the ECG device")
+            c[1].metric("Median days from onset to report", f"{rh['median_days_onset_to_report']:g}")
+            c[2].metric("AF named on AF recordings", f"{rh['af_named_on_reliable_af_recordings']:.0%}",
+                        help="Reliable recordings whose true rhythm was atrial fibrillation")
+            c[3].metric("Heart-rate spells confirmed on the ECG", f"{rh['heart_rate_spells_confirmed_on_the_ecg']:.0%}",
+                        help="Spells of a heart rate outside the patient's own limits, in patients with the ECG device")
+            a, b2 = st.columns([3, 2], gap="large")
+            sev, em = rh["new_af_report_severity"], rh["emergencies_where_the_ecg_finding_was_known_af"]
+            with a:
+                st.markdown("**What HeartSafe did with the named rhythm**")
+                st.dataframe(pd.DataFrame([
+                    ("Reliable ECG recordings read", rh["reliable_recordings"]),
+                    ("Recordings named atrial fibrillation", rh["recordings_named_af"]),
+                    ("Known AF: logged, not escalated as new", rh["known_af_recordings_not_escalated_as_new"]),
+                    ("New AF reported to the care team", rh["new_af_reports"]),
+                    ("↳ with symptoms (critical)", sev.get("critical", 0)),
+                    ("↳ without symptoms (caution)", sev.get("caution", 0)),
+                    ("↳ raised to critical when symptoms followed", rh["raised_to_critical_when_symptoms_followed"]),
+                    ("Later AF recordings added to the same report", rh["later_af_recordings_already_reported"]),
+                    ("Slow heart rate on the ECG (below the patient's limit)", rh["bradycardia_on_ecg"]),
+                    ("Fast heart rate on the ECG", rh["tachycardia_on_ecg"]),
+                    ("Platform heart-rate alerts confirmed on the ECG",
+                     rh["alerts_with_the_rate_confirmed_on_the_ecg"]["alerts"]),
+                ], columns=["Step", "Count"]), hide_index=True, width="stretch", height=425)
+            with b2:
+                st.warning(f"**{rh['new_af_reports_on_a_recording_without_af']} of {rh['new_af_reports']} new-AF "
+                           "reports** named AF on a recording whose true rhythm was not AF. The rhythm model is a "
+                           "single-lead screen: every report asks the clinician to confirm on a 12-lead ECG.")
+                st.markdown("**Two questions for the cardiologist** (switches in config.yaml, `ecg_rhythm`)")
+                text(f"• <b>known_af_triggers_emergency</b> (now on): {em['cases']} of {em['of_all_emergencies']} "
+                     f"emergencies had known AF as the ECG finding; the clinician cancelled {em['clinician_cancelled']} "
+                     "of them. Should known AF with chest pain or fainting still count as an abnormal ECG?")
+                text(f"• <b>known_af_upgrades_with_symptoms</b> (now off): "
+                     f"{rh['caution_alerts_with_known_af_on_ecg_not_raised']} caution alerts stayed caution because "
+                     "the only ECG finding was AF the patient is already known to have.")
+    with t_sc:
+        sc = r.get("selfcare")
+        if not sc:
+            st.info("No sleep or breathing results in this run. Re-run the cohort:  python -m heartsafe.run")
+        else:
+            br = sc["breathing"]
+            c = st.columns(4)
+            c[0].metric("Sleep check-ins / 100 patient-months", f"{sc['checkins_per_100_patient_months']:g}",
+                        help="Low-priority calls for the nurse; never a clinical alert")
+            c[1].metric("Poor-sleep spells with a check-in", f"{sc['spells_with_checkin_or_note']:.0%}",
+                        help=f"{sc['poor_sleep_spells']} simulated spells of poor sleep")
+            c[2].metric("Median hours to the check-in call", f"{sc['median_hours_to_checkin_call']:g}")
+            c[3].metric("Days meeting the breathing plan", f"{br['days_meeting_plan']:.0%}",
+                        help=f"Plan: {br['plan_sessions_per_day']} sessions a day")
+            a, b2 = st.columns(2, gap="large")
+            with a:
+                st.markdown("**What was behind the sleep check-ins**")
+                why = pd.DataFrame([{"reason": k.capitalize(), "n": v} for k, v in sc["what_was_behind_them"].items()])
+                st.altair_chart(style(alt.Chart(why).mark_bar(color=BLUE, cornerRadiusTopRight=4,
+                                                              cornerRadiusBottomRight=4, size=22).encode(
+                    y=alt.Y("reason:N", sort="-x", title=None, axis=alt.Axis(labelLimit=320)),
+                    x=alt.X("n:Q", title="Check-ins and notes"),
+                    tooltip=[alt.Tooltip("reason:N", title="Behind it"), alt.Tooltip("n:Q", title="Count")]), 150),
+                    width="stretch")
+                st.caption(f"{sc['sleep_checkins']} check-in calls and {sc['notes_added_to_open_case']} notes added to "
+                           "a case that was already open. Sleep is compared with the patient's own usual night.")
+            with b2:
+                st.markdown("**Sleep and breathing logged**")
+                st.dataframe(pd.DataFrame([
+                    ("Nights logged", f"{sc['nights_logged']:,}"),
+                    ("Median sleep", f"{sc['median_sleep_h']:g} h"),
+                    ("Breathing sessions a day (plan)", f"{br['mean_sessions_per_day']:g} ({br['plan_sessions_per_day']})"),
+                    ("Patients doing under half the plan", f"{br['patients_below_half_plan']:.0%}"),
+                ], columns=["Measure", "Value"]), hide_index=True, width="stretch")
+                st.caption("Sleep, poor-sleep spells and breathing adherence are simulated (config.yaml). The breathing "
+                           "plan is the care team's; HeartSafe only counts the sessions the patient logs.")
     with t1:
         a, b2 = st.columns([3, 2], gap="large")
         with a:
@@ -591,8 +733,11 @@ def page_results():
                  "HeartSafe": f"{stl['heartsafe']['flagged_by_reminder']} of {stl['heartsafe']['simulated_to_stall']}",
                  "Platform alone": f"0 of {stl['platform_alone']['simulated_to_stall']}"},
                 {"Measure": "Nurse queue items / 100 patient-months",
-                 "HeartSafe": f"{q['heartsafe_clinical_cases'] + q['heartsafe_nurse_verifications'] + q['heartsafe_patient_followups']:.0f}",
+                 "HeartSafe": f"{q['heartsafe_clinical_cases'] + q['heartsafe_nurse_verifications'] + q['heartsafe_patient_followups'] + q.get('heartsafe_sleep_checkins', 0):.0f}",
                  "Platform alone": f"{q['platform_alone_alert_items']:.0f}"}]), hide_index=True, width="stretch")
+            if q.get("heartsafe_sleep_checkins"):
+                st.caption(f"The HeartSafe queue includes {q['heartsafe_sleep_checkins']:g} routine sleep check-in "
+                           "calls per 100 patient-months, which the platform alone does not have.")
     with t2:
         if pl:
             a, b2 = st.columns([3, 2], gap="large")
@@ -666,6 +811,29 @@ def page_models():
             with b:
                 img("ecg/results/accuracy_vs_coverage.png", "Accuracy rises as the least certain ECGs are set aside")
             img("ecg/results/audit/forest_accuracy.png", "Subgroup accuracy, bootstrap 95% CIs")
+        rhy = jload("ecg/results/rhythm_evaluation.json")
+        if rhy:
+            st.markdown("**Naming the rhythm: normal, atrial fibrillation (AF) or another abnormal rhythm**")
+            st.dataframe(pd.DataFrame([
+                {"Test set (recordings the quality check accepted)": name, "Recordings": rhy[k]["n"],
+                 "AF caught (sensitivity)": f"{rhy[k]['af']['sensitivity']:.0%}",
+                 "Not AF, not called AF (specificity)": f"{rhy[k]['af']['specificity']:.1%}",
+                 "Called AF and is AF (PPV)": f"{rhy[k]['af']['ppv']:.0%}", "AF AUROC": f"{rhy[k]['af']['auroc']:.3f}",
+                 "3-class accuracy": f"{rhy[k]['accuracy']:.0%}"}
+                for k, name in (("ptbxl_test_accepted", "PTB-XL test, lead I"),
+                                ("cinc2017_test_accepted", "New device (AliveCor, PhysioNet 2017)")) if k in rhy]),
+                hide_index=True, width="stretch")
+            hr_ = rhy.get("heart_rate_from_r_peaks") or {}
+            rows = [{"Rhythm in the cardiologist's report": name, "Recordings": hr_[k]["n"],
+                     "Caught by the heart rate": f"{hr_[k]['sensitivity']:.0%}",
+                     "Specificity": f"{hr_[k]['specificity']:.0%}", "Median heart rate (bpm)": f"{hr_[k]['median_hr_bpm']:g}"}
+                    for k, name in (("SBRAD", "Sinus bradycardia (slow)"), ("STACH", "Sinus tachycardia (fast)"))
+                    if k in hr_]
+            if rows:
+                st.markdown("**Slow and fast heart rate, from the R-peaks the quality check already finds**")
+                st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+                st.caption("In the agent the heart rate is compared with the patient's own limits from enrollment, "
+                           "not with a fixed 60 / 100 bpm.")
     with tab_mri:
         rel = jload("imaging/results/reliability.json")
         if not rel:
@@ -704,30 +872,265 @@ def page_how():
         ("2 · The platform", "Collects daily weight, blood pressure, heart rate, oxygen saturation, symptoms and "
          "diuretic use, plus post-discharge labs, and raises normal / caution / critical alerts."),
         ("3 · Reliability checks", "Is the reading plausible? A unit or cuff error? A new scale (a nurse verifies it)? "
-         "Is the ECG good enough to trust? Are the MRI measurements reliable? Then: accept, repeat, or escalate."),
+         "Is the ECG good enough to trust? Are the MRI measurements reliable? Then: accept, repeat, or escalate. "
+         "A reliable ECG is named: new atrial fibrillation is reported, known AF is only logged, and the heart "
+         "rate is checked against the patient's own limits."),
         ("4 · Tracked cases", "Each escalation becomes a case with an explainable review. Deadlines trigger reminders "
          "and backup routing; a follow-up watch re-checks every case every few hours."),
         ("5 · Patient loop", "After the clinician decides, the instruction goes to the patient; a caregiver or "
          "community health worker is contacted if they do not confirm. Readings are checked after the action."),
         ("6 · Equity monitor", "Compares groups (remoteness, sex, age, device) and proposes safeguards, each with its "
          "cost, that an administrator approves."),
+        ("7 · Sleep and breathing", "The patient logs last night's sleep and the breathing exercises from the care "
+         "team's plan. Sleep worse than their own usual opens a routine check-in call, never a clinical alert; "
+         "breathlessness at night is passed on at caution level. Both show in every review."),
     ]
-    for row in (steps[:3], steps[3:]):
-        cols = st.columns(3)
+    for row in (steps[:4], steps[4:]):
+        cols = st.columns(4)
         for col, (t, body) in zip(cols, row):
-            with col.container(border=True, height=230):
+            with col.container(border=True, height=330):
                 st.markdown(f"**{t}**")
                 text(body)
     st.info("Only a clinician acknowledges, reviews and resolves a case, and only the patient side confirms an "
             "instruction. Every action is in the audit log.")
 
 
-nav = st.navigation([
-    st.Page(page_queue, title="Clinician queue", icon=":material/inbox:", default=True),
-    st.Page(page_patient, title="Patient journey", icon=":material/person:"),
-    st.Page(page_equity, title="Equity audit", icon=":material/balance:"),
-    st.Page(page_results, title="Results", icon=":material/monitoring:"),
-    st.Page(page_models, title="Model reliability", icon=":material/verified:"),
-    st.Page(page_how, title="How it works", icon=":material/help:"),
-])
-nav.run()
+# ---- the patient's page: sleep tracker and breathing exercises ------------------------------------
+# A guided breathing timer. The circle grows on the breath in and shrinks on the breath out; with
+# "reduce motion" set on the device it stays still and only the words and the countdown change.
+TIMER_HTML = """
+<style>
+  html, body {margin: 0; background: transparent; color: #0b0b0b;
+    font-family: "Source Sans 3", "Source Sans Pro", system-ui, -apple-system, "Segoe UI", sans-serif;}
+  .wrap {display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 6px 0 0;}
+  .stage {width: 230px; height: 230px; position: relative; display: flex; align-items: center; justify-content: center;}
+  .ring {position: absolute; inset: 0; border-radius: 50%; border: 2px dashed #c3c2b7;}
+  .ball {position: absolute; inset: 4px; border-radius: 50%; background: #cde2fb; border: 2px solid #2a78d6;
+    transform: scale(0.55); transition: transform 1s ease-in-out;}
+  .words {position: relative; text-align: center;}
+  .phase {font-size: 1.2rem; font-weight: 700;}
+  .sec {font-size: 2.1rem; font-weight: 700; color: #184f95; font-variant-numeric: tabular-nums; min-height: 2.5rem;}
+  .meta {color: #52514e; font-size: 0.95rem; min-height: 1.3rem; text-align: center;}
+  button {font: inherit; font-size: 0.95rem; padding: 7px 18px; border-radius: 8px; cursor: pointer;
+    border: 1px solid #c3c2b7; background: #fcfcfb; color: #0b0b0b; margin: 0 3px;}
+  button.primary {background: #2a78d6; border-color: #2a78d6; color: #fff; font-weight: 600;}
+  button:focus-visible {outline: 3px solid #184f95; outline-offset: 2px;}
+  @media (prefers-reduced-motion: reduce) {.ball {transition: none !important; transform: scale(0.8) !important;}}
+</style>
+<div class="wrap">
+  <div class="stage">
+    <div class="ring"></div><div class="ball" id="ball"></div>
+    <div class="words"><div class="phase" id="phase" aria-live="polite">Ready</div><div class="sec" id="sec"></div></div>
+  </div>
+  <div class="meta" id="meta"></div>
+  <div><button class="primary" id="go">Start</button><button id="again">Restart</button></div>
+</div>
+<script>
+  const PHASES = __PHASES__, TOTAL = __TOTAL__;            // [words, seconds, circle size], session seconds
+  const CYCLE = PHASES.reduce((a, p) => a + p[1], 0), BREATHS = Math.floor(TOTAL / CYCLE), END = BREATHS * CYCLE;
+  const ball = document.getElementById("ball"), phase = document.getElementById("phase"),
+        sec = document.getElementById("sec"), meta = document.getElementById("meta"),
+        go = document.getElementById("go"), again = document.getElementById("again");
+  let t = 0, timer = null, shown = -1;
+  const clock = s => Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+  function where() {                                         // the phase at second t, and seconds left in it
+    let c = t % CYCLE, i = 0;
+    while (c >= PHASES[i][1]) { c -= PHASES[i][1]; i++; }
+    return [i, PHASES[i][1] - c];
+  }
+  function move(i, seconds) {                                // send the circle to the size of phase i
+    ball.style.transition = "transform " + seconds + "s ease-in-out";
+    ball.style.transform = "scale(" + PHASES[i][2] + ")";
+  }
+  function draw() {
+    if (t >= END) {
+      stop(); phase.textContent = "Well done"; sec.textContent = ""; go.disabled = true; go.textContent = "Start";
+      move(PHASES.length - 1, 1);
+      meta.textContent = "Session finished. Press \\u201cI finished this session\\u201d below to log it.";
+      return;
+    }
+    const [i, left] = where();
+    if (timer && i !== shown) { move(i, left); shown = i; }
+    phase.textContent = t === 0 && !timer ? "Ready" : PHASES[i][0];
+    sec.textContent = t === 0 && !timer ? "" : left;
+    meta.textContent = clock(END - t) + " left \\u00b7 breath " + (Math.floor(t / CYCLE) + 1) + " of " + BREATHS;
+  }
+  function stop() { clearInterval(timer); timer = null; }
+  go.onclick = () => {
+    if (timer) {                                             // pause: freeze the circle where it is
+      stop(); ball.style.transform = getComputedStyle(ball).transform; ball.style.transition = "none";
+      shown = -1; go.textContent = "Continue"; return;
+    }
+    go.textContent = "Pause";
+    timer = setInterval(() => { t += 1; draw(); }, 1000);
+    draw();
+  };
+  again.onclick = () => {
+    stop(); t = 0; shown = -1; go.disabled = false; go.textContent = "Start";
+    ball.style.transition = "transform 0.6s ease-in-out"; ball.style.transform = "scale(0.55)"; draw();
+  };
+  draw();
+</script>
+"""
+
+
+def breathing_timer(ex, minutes):
+    phases = [p for p in (["Breathe in", ex["in_s"], 1.0], ["Hold", ex["hold_s"], 1.0],
+                          ["Breathe out", ex["out_s"], 0.55]) if p[1] > 0]
+    # TIMER_HTML is a constant of this file; only numbers from config.yaml are put into it
+    st.iframe(TIMER_HTML.replace("__PHASES__", json.dumps(phases)).replace("__TOTAL__", str(int(minutes * 60))),
+              height=350)
+
+
+def sleep_chart(hist, usual):
+    d = pd.DataFrame([{"day": h["day"], "hours": h["sleep_hours"], "woke": h.get("sleep_awakenings")}
+                      for h in hist if pd.notna(h.get("sleep_hours"))])
+    chart = alt.Chart(d).mark_bar(color=BLUE, cornerRadiusTopLeft=4, cornerRadiusTopRight=4, size=20).encode(
+        x=alt.X("day:O", title="Morning of day", axis=alt.Axis(labelAngle=0)),
+        y=alt.Y("hours:Q", title="Hours slept", scale=alt.Scale(domain=[0, max(10, d.hours.max())])),
+        tooltip=[alt.Tooltip("day:O", title="Morning of day"), alt.Tooltip("hours:Q", title="Hours slept", format=".1f"),
+                 alt.Tooltip("woke:Q", title="Times woken")])
+    if usual is not None:
+        chart = chart + alt.Chart(pd.DataFrame({"usual": [usual]})).mark_rule(
+            strokeDash=[5, 4], strokeWidth=2, color=INK2).encode(
+            y="usual:Q", tooltip=[alt.Tooltip("usual:Q", title="Your usual night (h)", format=".1f")])
+    return chart
+
+
+def page_selfcare():
+    pid = user
+    header("Sleep and breathing", "Log last night's sleep and do the breathing exercises from your care team's plan. "
+                                  "Your care team sees these entries next to your other readings.")
+    flash = st.session_state.pop("sc_flash", None)
+    if flash:
+        getattr(st, flash[0])(flash[1])
+    hist = selfcare_history(pid)
+    before = [h for h in hist if h["day"] < TODAY]
+    today = next((h for h in hist if h["day"] == TODAY), None) or {"day": TODAY}
+    slept = today.get("sleep_hours")
+    sl = sleep_status(before, today, cfg) or {}
+    usual = sl.get("usual_h")
+    if usual is None:  # fewer than the nights the comparison needs: show the median of what there is
+        earlier = [h["sleep_hours"] for h in before if pd.notna(h.get("sleep_hours"))]
+        usual_shown = round(float(pd.Series(earlier).median()), 1) if earlier else None
+    else:
+        usual_shown = usual
+    br = cfg["selfcare"]["breathing"]
+    plan, done = br["sessions_per_day"], int(today.get("breathing_sessions") or 0)
+    c = st.columns(4)
+    c[0].metric("Last night", f"{slept:g} h" if slept is not None else "Not logged yet")
+    c[1].metric("Your usual night", f"{usual_shown:g} h" if usual_shown is not None else "—",
+                help="The median of your earlier nights. Your sleep is compared with your own usual, not with a "
+                     "fixed number of hours.")
+    c[2].metric(f"Average, last {sl.get('nights', 0)} night(s)", f"{sl['recent_h']:g} h" if sl else "—")
+    c[3].metric("Breathing sessions today", f"{done} of {plan}", help="The number of sessions is your care team's plan")
+
+    t_sleep, t_breath, t_mine = st.tabs(["Sleep", "Breathing exercises", "My entries"])
+    with t_sleep:
+        left, right = st.columns([2, 3], gap="large")
+        with left, st.form("sleep_form"):
+            st.markdown("**Last night**")
+            hours_ = st.number_input("Hours slept", 0.0, 24.0, float(slept if slept is not None else usual_shown or 7.0),
+                                     step=0.5)
+            woke = st.number_input("Times you woke up", 0, 30, int(today.get("sleep_awakenings") or 0), step=1)
+            propped = st.checkbox("I slept propped up or sitting, because lying flat made me short of breath",
+                                  value=bool(today.get("propped_up")))
+            breathless = st.checkbox("I woke up short of breath", value=bool(today.get("woke_breathless")))
+            kept = st.pills("What kept you awake? (optional)", KEPT_AWAKE, selection_mode="multi",
+                            default=today.get("kept_awake") or None, format_func=str.capitalize)
+            if st.form_submit_button("Save last night's sleep", type="primary"):
+                sc_log.log_sleep(pid, TODAY, now, pid, "patient", hours_, woke, propped, breathless, kept or [])
+                entry = {**today, "sleep_hours": float(hours_), "sleep_awakenings": int(woke),
+                         "propped_up": propped, "woke_breathless": breathless}
+                patient = patients.set_index("patient_id", drop=False).to_dict("index")[pid]
+                what, _, _ = checkin_from_sleep_log(tr, cfg, patient, before, entry, now)
+                ack = cfg["followup"]["ack_deadline_h"]
+                if what == "checkin" and (propped or breathless):
+                    flash = ("warning", "Saved. You reported being short of breath at night, so your care team has "
+                             f"been told and a nurse is asked to call you within {ack['caution']:g} hours. "
+                             + cfg["emergency"]["patient_message"])
+                elif what == "checkin":
+                    flash = ("info", "Saved. Your sleep has been worse than your usual for a few nights, so a nurse "
+                             f"is asked to call you for a routine check-in within {ack['low'] / 24:g} days.")
+                elif what == "noted":
+                    flash = ("info", "Saved, and added to the case your care team already has open for you."
+                             + (" " + cfg["emergency"]["patient_message"] if propped or breathless else ""))
+                else:
+                    flash = ("success", "Saved. Thank you.")
+                st.session_state["sc_flash"] = flash
+                st.rerun()
+        with right:
+            st.markdown("**Your last nights**")
+            if any(pd.notna(h.get("sleep_hours")) for h in hist):
+                st.altair_chart(style(sleep_chart(hist, usual_shown), 270), width="stretch")
+                st.caption("Bars: hours slept each night"
+                           + (f". Dashed line: your usual night ({usual_shown:g} h)." if usual_shown is not None else "."))
+            else:
+                st.info("No nights logged yet. Your first entry starts the chart.")
+        st.caption(f"Demo: the simulation clock is fixed at day {TODAY}, so an entry is saved for this morning; saving "
+                   "again replaces it. Sleep is not monitored in real time.")
+    with t_breath:
+        exs = br["exercises"]
+        left, right = st.columns([3, 2], gap="large")
+        with left:
+            a, b = st.columns([3, 2])
+            key = a.radio("Exercise", list(exs), format_func=lambda k: (
+                f"{exs[k]['name']}: in {exs[k]['in_s']} s, "
+                + (f"hold {exs[k]['hold_s']} s, " if exs[k]["hold_s"] else "") + f"out {exs[k]['out_s']} s"))
+            minutes = b.segmented_control("Length", [2, 5], default=2, format_func=lambda m: f"{m} minutes") or 2
+            breathing_timer(exs[key], minutes)
+            if st.button("I finished this session", type="primary"):
+                sc_log.log_breathing(pid, TODAY, now, pid, "patient", exs[key]["name"], minutes)
+                left_ = plan - done - 1
+                st.session_state["sc_flash"] = ("success", "Session logged. " + (
+                    f"{left_} more to go today." if left_ > 0 else "You have done today's plan."))
+                st.rerun()
+        with right:
+            label("Today")
+            st.progress(min(done / plan, 1.0), text=f"{done} of {plan} sessions in your care team's plan")
+            week = [h for h in hist if pd.notna(h.get("breathing_sessions"))][-7:]
+            if week:
+                label("Last 7 days")
+                w = pd.DataFrame([{"day": h["day"], "sessions": h["breathing_sessions"]} for h in week])
+                st.altair_chart(style(alt.Chart(w).mark_bar(color=BLUE, cornerRadiusTopLeft=4, cornerRadiusTopRight=4,
+                                                            size=20).encode(
+                    x=alt.X("day:O", title="Day", axis=alt.Axis(labelAngle=0)),
+                    y=alt.Y("sessions:Q", title="Sessions", axis=alt.Axis(tickMinStep=1),
+                            scale=alt.Scale(domain=[0, max(plan, w.sessions.max())])),
+                    tooltip=[alt.Tooltip("day:O", title="Day"), alt.Tooltip("sessions:Q", title="Sessions")])
+                    + alt.Chart(pd.DataFrame({"plan": [plan]})).mark_rule(strokeDash=[5, 4], strokeWidth=2, color=INK2)
+                    .encode(y="plan:Q", tooltip=[alt.Tooltip("plan:Q", title="Plan (sessions a day)")]), 150),
+                    width="stretch")
+                st.caption(f"Dashed line: the plan ({plan} sessions a day).")
+            with st.container(border=True):
+                st.markdown("**Before you start**")
+                text("• Sit upright with your back supported and your shoulders relaxed.<br>"
+                     "• Breathe gently. Never force a breath or hold it until it is uncomfortable.<br>"
+                     "• After chest surgery, hold a pillow firmly against your chest if you need to cough.<br>"
+                     "• <b>Stop and rest</b> if you feel dizzy, get chest pain, or become more short of breath.")
+            st.caption("Which exercises to do and how often is your care team's plan; follow their instructions if "
+                       "they differ from this page. Nobody watches these sessions in real time. "
+                       + cfg["emergency"]["patient_message"])
+    with t_mine:
+        logged = logged_table(pid)
+        if len(logged):
+            st.dataframe(logged, hide_index=True, width="stretch")
+        else:
+            st.info("Nothing logged in the app yet.")
+        st.caption("Entries are kept as they were logged; a new sleep entry for the same night replaces the earlier "
+                   "one in the chart. Your care team can read them, and only you, a caregiver or a community health "
+                   "worker can add them.")
+
+
+if role == "patient":
+    pages = [st.Page(page_selfcare, title="Sleep and breathing", icon=":material/bedtime:", default=True)]
+else:
+    pages = [
+        st.Page(page_queue, title="Clinician queue", icon=":material/inbox:", default=True),
+        st.Page(page_patient, title="Patient journey", icon=":material/person:"),
+        st.Page(page_equity, title="Equity audit", icon=":material/balance:"),
+        st.Page(page_results, title="Results", icon=":material/monitoring:"),
+        st.Page(page_models, title="Model reliability", icon=":material/verified:"),
+        st.Page(page_how, title="How it works", icon=":material/help:"),
+    ]
+st.navigation(pages).run()

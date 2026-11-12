@@ -6,6 +6,7 @@ report summaries, and the follow-up status from the follow-up watch (watch.py). 
 Claude-written version (orchestrator.py) is optional future work, off by default.
 """
 from .monitoring import SYMPTOM_TEXT, SYMPTOMS
+from .selfcare import describe as describe_selfcare
 
 LVEF_BANDS = {"reduced_max": 40, "mildly_reduced_max": 49}  # % (universal definition of heart failure)
 
@@ -23,12 +24,17 @@ FOLLOWUP_STEP = ("Reach the patient, their caregiver or the community health wor
                  "the care team's instruction was not confirmed or not completed.")
 SCALE_CHECK_STEP = ("Call the patient within {ack} hours to confirm whether they started using a different "
                     "scale. Readings are re-baselined only after you confirm it.")
+SLEEP_STEP = ("Call the patient within {ack} hours to ask about their sleep: breathlessness lying flat or at "
+              "night, pain, cough, worry or low mood. Decide whether anything in the care plan needs to change.")
+AF_TEXT = {"new": "atrial fibrillation, not in the enrollment record: a new finding",
+           "reported": "atrial fibrillation, first seen during monitoring and already reported to the care team",
+           "known": "atrial fibrillation, known since enrollment: not a new finding"}
 ENROLLMENT = ("nyha", "days_since_discharge", "caregiver", "beta_blocker", "pacemaker_icd", "atrial_fibrillation",
               "baseline_sbp")
 
 
 def build_review(patient, day, rules_fired, hist, today, severity, flags, notes, ecg=None, mri=None,
-                 kind="clinical", ack_h=None):
+                 kind="clinical", ack_h=None, selfcare=None):
     trend = [{"day": h["day"], "weight_kg": round(h["weight_kg"], 1), "sbp": h["sbp"], "hr": h["hr"]}
              for h in hist[-7:]] + ([{"day": today["day"], "weight_kg": round(today["weight_kg"], 1),
                                       "sbp": today["sbp"], "hr": today["hr"]}] if today else [])
@@ -48,12 +54,14 @@ def build_review(patient, day, rules_fired, hist, today, severity, flags, notes,
         "symptoms": [s for s in SYMPTOMS if today and today.get(s)],
         "trend": trend,
         "ecg": None if not ecg else {k: ecg.get(k) for k in ("reliable", "action", "abnormal", "prob", "quality",
-                                                             "uncertainty", "reasons")},
+                                                             "uncertainty", "reasons", "rhythm", "af_prob", "hr",
+                                                             "af", "rate", "hr_limit")},
         "mri": mri,
+        "selfcare": selfcare,
         "reliability_flags": flags,
         "caveats": caveats,
-        "next_step": {"scale_check": SCALE_CHECK_STEP, "patient_followup": FOLLOWUP_STEP}.get(
-            kind, NEXT_STEP[severity]).format(ack=ack_h),
+        "next_step": {"scale_check": SCALE_CHECK_STEP, "patient_followup": FOLLOWUP_STEP,
+                      "sleep_check": SLEEP_STEP}.get(kind, NEXT_STEP[severity]).format(ack=ack_h),
         "decision_owner": "clinical team",
     }
 
@@ -70,7 +78,13 @@ def summarize_ecg(e):
     s = (f"Single-lead ECG: the model reads {read} (probability abnormal {e['prob']:.2f}); signal quality "
          f"{_band(e['quality'])} ({e['quality']:.2f}), model uncertainty {e['uncertainty']:.2f}.")
     if e["reliable"]:
-        return s + " Reliable enough to use as evidence."
+        s += " Reliable enough to use as evidence."
+        if e.get("af"):  # the rhythm is named only on a reliable recording
+            s += f" Rhythm: {AF_TEXT[e['af']]} (probability {e.get('af_prob') or 0:.2f})."
+        if e.get("rate"):
+            s += (f" Heart rate on the ECG {e['hr']:.0f} bpm: {e['rate']} "
+                  f"(this patient's limit is {e['hr_limit']:g}).")
+        return s
     why = ", ".join(e.get("reasons") or []) or "the ECG pipeline did not accept it"
     then = "a repeat ECG was requested" if e.get("action", "repeat") == "repeat" else "left for clinician review"
     return s + f" Not used as evidence ({why}); {then}."
@@ -144,6 +158,9 @@ def render(review, followup=None, lvef_bands=None):
                and c not in ((r["mri"] or {}).get("caveats") or [])]
     if caveats:
         lines.append("Reliability caveats: " + "; ".join(caveats) + ".")
+    sc = describe_selfcare(r.get("selfcare"))
+    if sc:
+        lines.append("Sleep and breathing (logged by the patient): " + sc)
     if followup:
         lines.append("Follow-up status: " + " ".join(followup))
     lines.append("Suggested next step: " + r["next_step"])

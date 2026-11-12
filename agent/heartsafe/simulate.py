@@ -6,9 +6,15 @@ pressure, heart rate and symptoms, plus the extra inputs cardiologists asked for
 (diastolic BP, oxygen saturation, more symptoms, diuretic taken, post-discharge
 labs). Candidates are screened with the inclusion criteria in config.yaml and
 only eligible patients are enrolled. Ground truth (true decompensation episodes,
-faulty readings) is kept in columns starting with "gt_" and is used only by the
-evaluation.
+faulty readings, heart rhythm) is kept in columns starting with "gt_" and is used
+only by the evaluation.
+
+Heart rhythm (known and new atrial fibrillation) and the patient's self-care log
+(last night's sleep, breathing-exercise sessions) are added after the readings, each
+from its own random stream per patient, so they never change the readings above.
 """
+import zlib
+
 import numpy as np
 import pandas as pd
 
@@ -164,6 +170,116 @@ def _personal_limits(p, cfg):
         p["hr_high"] = round(p["h0"] + m["hr"])
 
 
+def _own_rng(seed, pid, stream):
+    """A random stream of its own for one patient and one topic."""
+    return np.random.default_rng([int(seed), zlib.crc32(pid.encode()), stream])
+
+
+def _add_rhythm(feed, pats, n_days, cfg, seed):
+    """True heart rhythm on every day: gt_rhythm ("af" / "sinus") and gt_new_af.
+
+    Patients with atrial fibrillation at enrollment are in AF on every recording (permanent) or
+    on some days (paroxysmal). A few patients without it develop new AF for a spell: the heart
+    beats faster and they are more often short of breath."""
+    rc = cfg["simulation"].get("rhythm")
+    n = len(pats)
+    af, new = np.zeros((n, n_days), bool), np.zeros((n, n_days), bool)
+    if rc:
+        grid = lambda c, t: feed[c].to_numpy(t).reshape(n, n_days).copy()  # noqa: E731
+        hr, gt_hr, sob, sub = grid("hr", float), grid("gt_hr", float), grid("sob", bool), grid("submitted", bool)
+        lo, hi = rc["new_af_days"]
+        for i, p in enumerate(pats):
+            if p["patient_id"] == "DEMO-MARY":
+                continue
+            rng = _own_rng(seed, p["patient_id"], 1)
+            u = rng.random()
+            if p.get("atrial_fibrillation"):
+                af[i] = True if u < rc["permanent_af_share"] else rng.random(n_days) < rc["paroxysmal_af_day_prob"]
+            elif u < rc["new_af_prob"] and n_days > lo + 6:
+                start = int(rng.integers(5, n_days - lo))
+                d = slice(start, min(start + int(rng.integers(lo, hi + 1)), n_days))
+                af[i, d] = new[i, d] = True
+                rise = np.round(rng.normal(rc["new_af_hr_rise"], 6, n_days))
+                hr[i, d] += rise[d]
+                gt_hr[i, d] += rise[d]
+                sob[i, d] |= (rng.random(n_days) < rc["new_af_breathless"])[d] & sub[i, d]
+        feed = feed.assign(hr=hr.ravel(), gt_hr=gt_hr.ravel(), sob=sob.ravel())
+    return feed.assign(gt_rhythm=np.where(af.ravel(), "af", "sinus"), gt_new_af=new.ravel())
+
+
+def _add_rate_spells(feed, pats, n_days, cfg, seed):
+    """A few days with the heart rate outside the patient's own limits: gt_rate ("slow" / "fast" /
+    "none"). Too slow in a patient on a beta-blocker without a pacemaker, too fast in any patient;
+    on some of these days the patient is short of breath."""
+    rc = cfg["simulation"].get("heart_rate_spells")
+    n = len(pats)
+    kind = np.full((n, n_days), "none", dtype=object)
+    if rc and n_days > rc["days"][1] + 6:
+        rules = cfg["alert_rules"]
+        grid = lambda c, t: feed[c].to_numpy(t).reshape(n, n_days).copy()  # noqa: E731
+        hr, gt_hr, sob, sub = grid("hr", float), grid("gt_hr", float), grid("sob", bool), grid("submitted", bool)
+        lo, hi = rc["days"]
+        for i, p in enumerate(pats):
+            if p["patient_id"] == "DEMO-MARY":
+                continue
+            rng = _own_rng(seed, p["patient_id"], 3)
+            u = rng.random()
+            slow = u < rc["slow_prob"] and p.get("beta_blocker") and not p.get("pacemaker_icd")
+            if not slow and u < 1 - rc["fast_prob"]:
+                continue
+            start = int(rng.integers(5, n_days - hi))
+            d = slice(start, start + int(rng.integers(lo, hi + 1)))
+            m = d.stop - d.start
+            v = p.get("hr_low", rules["hr_low"]) - rng.integers(2, 10, m) if slow else \
+                p.get("hr_high", rules["hr_high"]) + rng.integers(3, 26, m)
+            hr[i, d] = gt_hr[i, d] = np.where(sub[i, d], v, np.nan)
+            sob[i, d] |= (rng.random(m) < rc["breathless"]) & sub[i, d]
+            kind[i, d] = "slow" if slow else "fast"
+        feed = feed.assign(hr=hr.ravel(), gt_hr=gt_hr.ravel(), sob=sob.ravel())
+    return feed.assign(gt_rate=kind.ravel())
+
+
+def _add_selfcare(feed, pats, n_days, cfg, seed):
+    """What the patient logs in the daily check-in: hours slept last night, times woken, and
+    breathing-exercise sessions done. Sleep is shorter during a decompensation, on nights with
+    breathlessness, and in a spell of poor sleep (most likely soon after discharge)."""
+    sc = cfg["simulation"].get("selfcare")
+    if not sc:
+        return feed
+    n = len(pats)
+    plan = cfg.get("selfcare", {}).get("breathing", {}).get("sessions_per_day", 3)
+    grid = lambda c: feed[c].to_numpy(bool).reshape(n, n_days)  # noqa: E731
+    ep, sub, breathless = grid("gt_episode"), grid("submitted"), grid("orthopnea") | grid("pnd")
+    hours, wakes, sess = (np.full((n, n_days), np.nan) for _ in range(3))
+    poor = np.zeros((n, n_days), bool)
+    lo, hi = sc["poor_sleep_days"]
+    for i, p in enumerate(pats):
+        demo = p["patient_id"] == "DEMO-MARY"
+        rng = _own_rng(seed, p["patient_id"], 2)
+        usual = float(np.clip(rng.normal(*sc["usual_sleep_h"]), 5.0, 9.0))
+        wake0 = float(np.clip(rng.gamma(2.0, 0.6), 0.2, 3.0))
+        adherence = float(rng.beta(*sc["breathing_adherence_beta"]))
+        has_spell = rng.random() < sc["poor_sleep_prob"]
+        start = 3 + int(rng.exponential(sc["poor_sleep_early_scale_days"]))
+        length = int(rng.integers(lo, hi + 1))
+        if demo:  # the demo patient sleeps badly in her second week at home
+            usual, wake0, adherence, has_spell, start, length = 6.8, 1.0, 0.7, True, 8, 6
+        if has_spell and start < n_days:
+            poor[i, start:start + length] = True
+        run = np.zeros(n_days)  # days into the decompensation: sleep worsens over the first week
+        for d in range(n_days):
+            run[d] = (run[d - 1] + 1 if d else 1) if ep[i, d] else 0
+        ramp = np.minimum(run, 7) / 7
+        h = usual + rng.normal(0, sc["night_sd_h"], n_days) - sc["episode_sleep_loss_h"] * ramp             - sc["breathless_night_loss_h"] * breathless[i] - sc["poor_sleep_loss_h"] * poor[i]
+        w = rng.poisson(wake0 + 2.0 * ramp + 1.5 * breathless[i] + 2.0 * poor[i])
+        b = rng.binomial(plan, np.clip(adherence * (1 - 0.4 * ramp), 0, 1))
+        ok = sub[i]
+        hours[i, ok] = np.round(np.clip(h, 1.5, 11.0) * 2)[ok] / 2  # patients answer in half hours
+        wakes[i, ok], sess[i, ok] = w[ok], b[ok]
+    return feed.assign(sleep_hours=hours.ravel(), sleep_awakenings=wakes.ravel(),
+                       breathing_sessions=sess.ravel(), gt_poor_sleep=poor.ravel())
+
+
 def simulate_cohort(cfg, n_patients=None, n_days=None, seed=None, demo=True):
     """Screen candidates until n_patients are enrolled. The screening log is in patients.attrs["screening"]."""
     co, sc, inc = cfg["cohort"], cfg["simulation"], cfg["inclusion"]
@@ -203,4 +319,7 @@ def simulate_cohort(cfg, n_patients=None, n_days=None, seed=None, demo=True):
                                    "not_eligible": n_cand - n_patients,
                                    "reasons": dict(sorted(reasons.items(), key=lambda x: -x[1])),
                                    "criteria": inc}
-    return patients, pd.DataFrame(rows)
+    own_seed = co["seed"] if seed is None else seed
+    feed = _add_rhythm(pd.DataFrame(rows), pats, n_days, cfg, own_seed)
+    feed = _add_rate_spells(feed, pats, n_days, cfg, own_seed)
+    return patients, _add_selfcare(feed, pats, n_days, cfg, own_seed)
