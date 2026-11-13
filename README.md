@@ -1,7 +1,7 @@
 # HeartSafe Agent — WAI Canada Hackathon 2026
 
-> **Finalist, 2026 Women in AI Canada Hackathon (Team 40).** Built by Yassmin Abdelaziz, Vertika Chaudhary
-> and Ana Karen Luque Flores. This is a copy of the team repository,
+> **Finalist, 2026 Women in AI Canada Hackathon (Team 40).** Built by Yassmin Abdelaziz and
+> Ana Karen Luque Flores. This is a copy of the team repository,
 > [yassmin2000/HeartSafe_WAI-Hackathon](https://github.com/yassmin2000/HeartSafe_WAI-Hackathon), with the full history.
 
 **A safety and follow-up layer for remote heart-failure monitoring.** HeartSafe sits between an existing
